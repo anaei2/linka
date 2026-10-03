@@ -1,15 +1,30 @@
 const http=require('http'), fs=require('fs'), path=require('path'), crypto=require('crypto');
 const express=require('express'), WebSocket=require('ws'), webpush=require('web-push');
 const app=express(); const server=http.createServer(app); const wss=new WebSocket.Server({server});
-const PORT=process.env.PORT||3000, DATA_DIR=process.env.DATA_DIR||path.join(__dirname), DATA=path.join(DATA_DIR,'data.json');
+const PORT=process.env.PORT||3000, DATA_DIR=process.env.DATA_DIR||path.join(__dirname), DATA=path.join(DATA_DIR,'data.json'), BACKUP=path.join(DATA_DIR,'data.json.bak');
 try{fs.mkdirSync(DATA_DIR,{recursive:true})}catch(e){}
+// Render: DATA_DIR deve apontar para um Persistent Disk (/var/data).
+// Mantemos um backup local para reduzir o risco de corrupção do JSON durante reinícios.
+if(!fs.existsSync(DATA) && fs.existsSync(path.join(__dirname,'data.json')) && DATA_DIR!==__dirname){try{fs.copyFileSync(path.join(__dirname,'data.json'),DATA)}catch(e){console.error('Migração inicial dos dados:',e)}}
 app.use(express.json({limit:'12mb'})); app.use(express.static(path.join(__dirname,'www')));
 let db={users:[],contacts:{},messages:{},sessions:{}};
-try{if(fs.existsSync(DATA)) db=JSON.parse(fs.readFileSync(DATA,'utf8'));}catch(e){console.error(e)}
+try{
+  if(fs.existsSync(DATA)) db=JSON.parse(fs.readFileSync(DATA,'utf8'));
+  else if(fs.existsSync(BACKUP)) db=JSON.parse(fs.readFileSync(BACKUP,'utf8'));
+}catch(e){
+  console.error('Falha ao ler os dados principais:',e);
+  try{if(fs.existsSync(BACKUP)) db=JSON.parse(fs.readFileSync(BACKUP,'utf8'));}catch(e2){console.error('Falha ao restaurar backup:',e2)}
+}
 db.users??=[]; db.contacts??={}; db.messages??={}; db.sessions??={}; db.pushSubscriptions??={}; db.pushKeys??=null;
 if(!db.pushKeys){db.pushKeys=webpush.generateVAPIDKeys(); try{save()}catch(e){console.error(e)}}
 webpush.setVapidDetails(process.env.VAPID_SUBJECT||'mailto:linka@localhost', process.env.VAPID_PUBLIC_KEY||db.pushKeys.publicKey, process.env.VAPID_PRIVATE_KEY||db.pushKeys.privateKey);
-function save(){fs.writeFileSync(DATA,JSON.stringify(db));}
+function save(){
+  const tmp=DATA+'.tmp';
+  const text=JSON.stringify(db);
+  fs.writeFileSync(tmp,text);
+  if(fs.existsSync(DATA)){try{fs.copyFileSync(DATA,BACKUP)}catch(e){}}
+  fs.renameSync(tmp,DATA);
+}
 function id(){return crypto.randomBytes(12).toString('hex')}
 function hash(p,s=crypto.randomBytes(16).toString('hex')){return {s, h:crypto.scryptSync(p,s,64).toString('hex')}}
 function check(p,u){return crypto.timingSafeEqual(Buffer.from(hash(p,u.s).h,'hex'),Buffer.from(u.h,'hex'))}

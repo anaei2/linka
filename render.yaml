@@ -5,10 +5,10 @@ services:
     buildCommand: npm install
     startCommand: npm start
     autoDeploy: true
-    disk:
-      name: linka-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
-      - key: DATA_DIR
-        value: /var/data
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        value: mailto:linka@localhost

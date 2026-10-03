@@ -1,22 +1,36 @@
-# Almeida Chat 2.0
+# Linka — persistência no Render Free
 
-Mensageiro web/Android com contas de usuário, login, perfil com foto, busca de usuários, contatos, conversas privadas e mensagens em tempo real via WebSocket. Não usa código de sala.
+Esta versão não depende de Persistent Disk. As contas, contatos, mensagens, sessões e configurações são armazenadas em uma tabela JSON no Supabase.
 
-## Render
-- Runtime: Node
-- Build command: `npm install`
-- Start command: `npm start`
-- O servidor serve automaticamente a pasta `www`.
+## 1. Criar o armazenamento
 
-## GitHub
-Envie o conteúdo deste projeto para o repositório. Não é necessário criar uma pasta `public`.
+1. Abra o SQL Editor do seu projeto Supabase.
+2. Cole o conteúdo de `supabase.sql`.
+3. Execute.
 
-## Capacitor
-O projeto mantém os arquivos do Capacitor. Depois de instalar as dependências, use `npx cap add android` (se ainda não houver Android) e `npx cap sync android`.
+## 2. Configurar o Render
 
+No serviço `linka`, abra **Environment** e crie:
 
-## Persistência das contas
+- `SUPABASE_URL` = URL do seu projeto Supabase.
+- `SUPABASE_SERVICE_ROLE_KEY` = chave secreta `service_role` do Supabase.
 
-O servidor salva contas, contatos, mensagens e sessões em `DATA_DIR/data.json`. No Render, o serviço deve usar o Persistent Disk montado em `/var/data` (já configurado em `render.yaml`). Sem armazenamento persistente, o Render pode apagar os arquivos ao reiniciar e não existe correção somente no aplicativo que consiga recuperar os dados do servidor.
+O `render.yaml` já declara essas variáveis como secretas (`sync: false`).
 
-A interface agora mostra `Conectando ao Linka` / `Aguarde alguns segundos` enquanto o servidor acorda e tenta reconectar automaticamente.
+**Nunca coloque a `service_role` no HTML, JavaScript do navegador, GitHub público ou envie essa chave em conversa.**
+
+## 3. Deploy
+
+Faça commit/push destes arquivos e deixe o Render fazer o deploy.
+
+Na primeira inicialização, se a tabela estiver vazia, o Linka usa os dados locais disponíveis e grava o estado no Supabase.
+
+Depois disso, reiniciar o serviço ou o Render acordar o serviço não apaga as contas.
+
+## 4. Manter conectado
+
+O navegador já guarda `ac_token` no `localStorage` quando **Manter conectado neste dispositivo** está marcado. Como a sessão também fica no Supabase, o token continua válido depois de um reinício do Render.
+
+## 5. Sem Supabase configurado
+
+O projeto ainda funciona localmente usando `data.json`, mas no Render Free isso é temporário. Para persistência no Free, configure as duas variáveis do Supabase.

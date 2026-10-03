@@ -2,10 +2,10 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.almeida.chat',
-  appName: 'Almeida Chat',
+  appName: 'Linka',
   webDir: 'www',
   server: {
-    url: 'https://almeida-chat.onrender.com/',
+    url: 'https://linka.onrender.com/',
     cleartext: false
   },
   android: {

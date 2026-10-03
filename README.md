@@ -1,4 +1,4 @@
-# Almeida Chat 2.0
+# Linka 2.0
 
 Mensageiro web/Android com contas de usuário, login, perfil com foto, busca de usuários, contatos, conversas privadas e mensagens em tempo real via WebSocket. Não usa código de sala.
 

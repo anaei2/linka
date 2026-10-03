@@ -27,4 +27,4 @@ app.get('/api/messages/:id',auth,(req,res)=>{const other=req.params.id;if(!db.us
 app.post('/api/messages/:id',auth,(req,res)=>{const other=req.params.id;const u=db.users.find(x=>x.id===other);if(!u)return res.status(404).json({error:'Usuário não encontrado.'});const text=String(req.body?.text||'').trim();if(!text||text.length>4000)return res.status(400).json({error:'Mensagem inválida.'});const m={id:id(),from:req.user.id,to:other,text,createdAt:Date.now()};const k=pair(req.user.id,other);db.messages[k]??=[];db.messages[k].push(m);db.messages[k]=db.messages[k].slice(-500);save();sendUser(other,{type:'message',message:m});res.json(m);});
 app.get(/.*/,(req,res)=>res.sendFile(path.join(__dirname,'www','index.html')));
 wss.on('connection',(ws,req)=>{const token=new URL(req.url,'http://localhost').searchParams.get('token');const uid=sessions.get(token);if(!uid){ws.close();return}ws.token=token;ws.on('close',()=>{});});
-server.listen(PORT,()=>console.log('Linka rodando na porta '+PORT));
+server.listen(PORT,()=>console.log('Almeida Chat rodando na porta '+PORT));

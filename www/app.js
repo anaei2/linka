@@ -4,6 +4,7 @@ document.addEventListener('contextmenu',e=>e.preventDefault(),{capture:true});
 document.addEventListener('selectstart',e=>e.preventDefault(),{capture:true});
 document.addEventListener('dragstart',e=>e.preventDefault(),{capture:true});
 const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+function hideBoot(){const b=document.querySelector('#boot');if(!b)return;b.classList.add('hide');setTimeout(()=>b.remove(),300)}
 const api=async(path,opt={})=>{opt.headers={...(opt.headers||{}),...(A.token?{Authorization:'Bearer '+A.token}:{})};if(opt.body&&typeof opt.body!=='string'){opt.headers['Content-Type']='application/json';opt.body=JSON.stringify(opt.body)}const r=await fetch(path,opt);let d={};try{d=await r.json()}catch{}if(!r.ok)throw Error(d.error||'Erro');return d};
 function av(x,big=false){return `<div class="avatar ${big?'big':''}">${x?.photo?`<img src="${x.photo}">`:esc((x?.name||'?')[0].toUpperCase())}</div>`}
 function toast(t){const x=document.createElement('div');x.className='toast';x.textContent=t;document.body.appendChild(x);setTimeout(()=>x.remove(),2200)}
@@ -12,7 +13,35 @@ function applyChatBg(){const box=$('#msgs');if(!box)return;const bg=A.user?.chat
 function login(){document.body.innerHTML=`<div class="auth"><div class="authbox"><div class="logo">L</div><h1>Linka</h1><p>Converse com seus contatos, sem código de sala.</p><div id="authForm"></div></div></div>`;showLogin()}
 function showLogin(){const f=$('#authForm');f.innerHTML=`<input id="u" placeholder="Usuário" autocomplete="username"><input id="p" type="password" placeholder="Senha" autocomplete="current-password"><label class="remember"><input id="remember" type="checkbox" checked> Manter conectado neste dispositivo</label><button class="primary" id="go">Entrar</button><button class="link" id="new">Criar conta</button>`;$('#go').onclick=async()=>{try{const d=await api('/api/login',{method:'POST',body:{username:$('#u').value,password:$('#p').value}});A.token=d.token;if($('#remember').checked)localStorage.setItem('ac_token',A.token);else sessionStorage.setItem('ac_token',A.token);start()}catch(e){toast(e.message)}};$('#new').onclick=showRegister}
 function showRegister(){const f=$('#authForm');f.innerHTML=`<input id="n" placeholder="Seu nome"><input id="u" placeholder="Crie um usuário (ex.: gabriel)"><input id="p" type="password" placeholder="Senha (mínimo 6 caracteres)"><button class="primary" id="go">Criar conta</button><button class="link" id="back">Já tenho conta</button>`;$('#go').onclick=async()=>{try{const d=await api('/api/register',{method:'POST',body:{name:$('#n').value,username:$('#u').value,password:$('#p').value}});A.token=d.token;localStorage.setItem('ac_token',A.token);sessionStorage.removeItem('ac_token');start()}catch(e){toast(e.message)}};$('#back').onclick=showLogin}
-async function start(){try{const d=await api('/api/me');A.user=d.user;await loadContacts();render();initNotifications();connect();const chat=new URLSearchParams(location.search).get('chat');if(chat)setTimeout(()=>openChat(chat),150)}catch(e){localStorage.removeItem('ac_token');sessionStorage.removeItem('ac_token');A.token='';login()}}
+async function start(){
+  if(!A.token){hideBoot();login();return}
+  let attempts=0;
+  while(A.token && attempts<12){
+    try{
+      const d=await api('/api/me');
+      A.user=d.user;
+      await loadContacts();
+      render();
+      hideBoot();
+      initNotifications();
+      connect();
+      const chat=new URLSearchParams(location.search).get('chat');
+      if(chat)setTimeout(()=>openChat(chat),150);
+      return;
+    }catch(e){
+      attempts++;
+      // Se o Render estiver acordando, aguarde e tente novamente.
+      // Só apagamos a sessão quando o servidor realmente responde com 401.
+      if(/Sessão expirada|Usuário não encontrado/i.test(e.message||'')){
+        localStorage.removeItem('ac_token');sessionStorage.removeItem('ac_token');A.token='';hideBoot();login();return;
+      }
+      await new Promise(r=>setTimeout(r,Math.min(2000+attempts*500,5000)));
+    }
+  }
+  hideBoot();
+  toast('Não foi possível conectar ao servidor. Tente novamente.');
+  login();
+}
 async function loadContacts(){A.contacts=await api('/api/contacts')}
 function render(){document.body.classList.remove('chat-open');document.body.innerHTML=`<div class="app"><aside class="side" id="side"><header class="top"><div class="profile" id="profile">${av(A.user)}<div><b>${esc(A.user.name)}</b><span>${esc('@'+A.user.username)}</span></div></div><button class="icon" id="menu">☰</button></header><div class="search">⌕<input id="search" placeholder="Pesquisar contatos ou conversas"></div><div class="tabs"><button class="tab active" id="chats">Conversas</button><button class="tab" id="contacts">Contatos</button></div><div class="list" id="list"></div></aside><main class="main" id="main"><div class="welcome"><div class="mark">A</div><h1>Linka</h1><p>Selecione um contato para começar.</p></div></main><div id="modal"></div></div>`;$('#profile').onclick=profileModal;$('#menu').onclick=menuModal;$('#search').oninput=e=>{A.search=e.target.value.trim();renderList()};$('#contacts').onclick=contactsView;renderList()}
 function renderList(){const q=A.search.toLowerCase();const xs=A.contacts.filter(c=>(c.name+' '+c.username).toLowerCase().includes(q));const list=$('#list');if(!list)return;if(!xs.length){list.innerHTML='<div class="empty">Nenhum contato.<br><button class="link" id="find" type="button">Adicionar contato</button></div>';const f=$('#find');if(f)f.onclick=addContactModal;return}list.innerHTML=xs.map(c=>`<button class="item" type="button" data-id="${esc(c.id)}" aria-label="Abrir conversa com ${esc(c.name)}">${av(c)}<div class="info"><b>${esc(c.name)}</b><span>@${esc(c.username)}</span><small class="presence" data-presence="${esc(c.id)}">${esc(presenceText(c))}</small></div></button>`).join('');list.querySelectorAll('.item').forEach(item=>{item.onclick=()=>openChat(String(item.dataset.id))})}

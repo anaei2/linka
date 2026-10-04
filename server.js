@@ -20,7 +20,7 @@ const messaging=firebase.messaging();
 self.addEventListener('notificationclick',(event)=>{event.notification.close();const d=event.notification.data||{};const url=d.chatId?'/?chat='+encodeURIComponent(d.chatId):'/';event.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(cs=>{for(const c of cs){if('focus' in c){c.navigate(url);return c.focus()}}return clients.openWindow(url)}));});`);
 });
 app.use(express.static(path.join(__dirname,'www')));
-let db={users:[],contacts:{},messages:{},sessions:{},fcmTokens:{},notifications:{}};
+let db={users:[],contacts:{},messages:{},sessions:{},fcmTokens:{},notifications:{},callHistory:{}};
 let firebaseReady=false;
 function initFirebase(){
   try{
@@ -44,7 +44,7 @@ function firebaseConfig(){return {
 
 function normalizeDB(x){
   db=x&&typeof x==='object'?x:db;
-  db.users??=[]; db.contacts??={}; db.messages??={}; db.sessions??={}; db.fcmTokens??={}; db.notifications??={};
+  db.users??=[]; db.contacts??={}; db.messages??={}; db.sessions??={}; db.fcmTokens??={}; db.notifications??={}; db.callHistory??={};
   return db;
 }
 function readLocal(){
@@ -151,10 +151,35 @@ app.delete('/api/fcm/token',auth,(req,res)=>{const token=String(req.body?.token|
 app.get('/api/notifications',auth,(req,res)=>{const list=db.notifications[req.user.id]||[];res.json(list.slice(0,100));});
 app.post('/api/notifications/read-all',auth,(req,res)=>{const list=db.notifications[req.user.id]||[];list.forEach(n=>n.read=true);save();res.json({ok:true});});
 app.post('/api/notifications/:id/read',auth,(req,res)=>{const n=(db.notifications[req.user.id]||[]).find(x=>x.id===req.params.id);if(!n)return res.status(404).json({error:'Notificação não encontrada.'});n.read=true;save();res.json({ok:true});});
+app.get('/api/calls',auth,(req,res)=>{
+  const list=db.callHistory[req.user.id]||[];
+  const out=list.slice().sort((a,b)=>(b.endedAt||b.startedAt||0)-(a.endedAt||a.startedAt||0)).slice(0,100).map(c=>{
+    const otherId=c.from===req.user.id?c.to:c.from;
+    const other=db.users.find(u=>u.id===otherId);
+    return {...c,other:other?safe(other):null};
+  });
+  res.json(out);
+});
+function addCallHistory(uid,entry){db.callHistory[uid]??=[];db.callHistory[uid].push(entry);db.callHistory[uid]=db.callHistory[uid].slice(-200);}
+function createCallRecord(from,to,callId){
+  if(!callId||!from||!to)return;
+  const entry={id:callId,from,to,status:'ringing',startedAt:Date.now(),connectedAt:null,endedAt:null,duration:0};
+  addCallHistory(from,entry);addCallHistory(to,entry);save();
+}
+function updateCallRecord(callId,patch){
+  if(!callId)return;
+  let changed=false;
+  for(const uid of Object.keys(db.callHistory)){
+    const c=(db.callHistory[uid]||[]).find(x=>x.id===callId);
+    if(c){Object.assign(c,patch);changed=true;}
+  }
+  if(changed)save();
+}
+
 app.get('/api/messages/:id',auth,(req,res)=>{const other=req.params.id;if(!db.users.some(u=>u.id===other))return res.status(404).json({error:'Usuário não encontrado.'});res.json(db.messages[pair(req.user.id,other)]||[])});
 app.post('/api/messages/:id',auth,(req,res)=>{const other=req.params.id;const u=db.users.find(x=>x.id===other);if(!u)return res.status(404).json({error:'Usuário não encontrado.'});let m;if(req.body?.type==='audio'){const audio=String(req.body?.audio||'');if(!/^data:audio\/[A-Za-z0-9.+-]+(?:;[^,]*)?;base64,[A-Za-z0-9+/=]+$/.test(audio)||audio.length>10*1024*1024)return res.status(400).json({error:'Áudio inválido ou muito grande.'});m={id:id(),from:req.user.id,to:other,type:'audio',audio,createdAt:Date.now()};}else{const text=String(req.body?.text||'').trim();if(!text||text.length>4000)return res.status(400).json({error:'Mensagem inválida.'});m={id:id(),from:req.user.id,to:other,type:'text',text,createdAt:Date.now()};}const k=pair(req.user.id,other);db.messages[k]??=[];db.messages[k].push(m);db.messages[k]=db.messages[k].slice(-500);save();sendUser(other,{type:'message',message:m});const preview=m.type==='audio'?'Áudio recebido':m.text;const note=addNotification(other.id,{kind:'message',title:req.user.name||'Nova mensagem',body:preview,from:req.user.id,chatId:req.user.id});pushUser(other,{title:note.title,body:note.body,icon:'/icon-192.png',badge:'/icon-192.png',data:{chatId:req.user.id,notificationId:note.id}}).catch(()=>{});res.json(m);});
 app.get(/.*/,(req,res)=>res.sendFile(path.join(__dirname,'www','index.html')));
-wss.on('connection',(ws,req)=>{const token=new URL(req.url,'http://localhost').searchParams.get('token');const uid=sessions.get(token)||db.sessions[token];if(uid)sessions.set(token,uid);if(!uid){ws.close();return}ws.token=token;touch(uid);ws.on('message',buf=>{try{const d=JSON.parse(buf);if(d.type==='ping')touch(uid);if(d.type==='typing'&&d.to)sendUser(d.to,{type:'typing',from:uid,active:!!d.active});if(['call-room-invite','call-room-join','call-room-joined','call-room-error','call-live-start','call-live-ready','call-live-audio','call-reject','call-busy','call-end'].includes(d.type)&&d.to)sendUser(d.to,{...d,from:uid})}catch{}});ws.on('close',()=>{touch(uid);sendUser(uid,{type:'presence',id:uid})});sendUser(uid,{type:'presence',id:uid})});
+wss.on('connection',(ws,req)=>{const token=new URL(req.url,'http://localhost').searchParams.get('token');const uid=sessions.get(token)||db.sessions[token];if(uid)sessions.set(token,uid);if(!uid){ws.close();return}ws.token=token;touch(uid);ws.on('message',buf=>{try{const d=JSON.parse(buf);if(d.type==='ping')touch(uid);if(d.type==='typing'&&d.to)sendUser(d.to,{type:'typing',from:uid,active:!!d.active});if(d.type==='call-room-invite'&&d.to){createCallRecord(uid,d.to,d.callId);sendUser(d.to,{...d,from:uid});}if(d.type==='call-live-ready'&&d.to){updateCallRecord(d.callId,{status:'connected',connectedAt:Date.now()});sendUser(d.to,{...d,from:uid});}if(d.type==='call-reject'&&d.to){updateCallRecord(d.callId,{status:'rejected',endedAt:Date.now(),duration:0});sendUser(d.to,{...d,from:uid});}if(d.type==='call-busy'&&d.to){updateCallRecord(d.callId,{status:'busy',endedAt:Date.now(),duration:0});sendUser(d.to,{...d,from:uid});}if(d.type==='call-end'&&d.to){const now=Date.now();const all=[];for(const arr of Object.values(db.callHistory))for(const c of arr)if(c.id===d.callId)all.push(c);const base=all.find(c=>c.connectedAt)||all[0];const duration=base?.connectedAt?Math.max(0,Math.floor((now-base.connectedAt)/1000)):0;updateCallRecord(d.callId,{status:'ended',endedAt:now,duration});sendUser(d.to,{...d,from:uid});}if(['call-room-join','call-room-joined','call-room-error','call-live-start','call-live-audio'].includes(d.type)&&d.to)sendUser(d.to,{...d,from:uid})}catch{}});ws.on('close',()=>{touch(uid);sendUser(uid,{type:'presence',id:uid})});sendUser(uid,{type:'presence',id:uid})});
 
 async function boot(){
   const remote=await loadRemote();

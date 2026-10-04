@@ -39,3 +39,7 @@ As chamadas usam o WebSocket seguro do próprio Linka para transportar áudio PC
 
 ## Chamada de vídeo
 A versão inclui chamada de vídeo com WebRTC para vídeo e a transmissão de áudio já existente do Linka. A sinalização passa pelo WebSocket do próprio servidor e há STUN/TURN de fallback.
+
+
+## Notificações de mensagens e chamadas
+O servidor envia notificações FCM para novas mensagens e chamadas recebidas. Chamadas pendentes são reenviadas quando o Linka reconecta.

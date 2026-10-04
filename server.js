@@ -1,1261 +1,142 @@
-const express = require('express');
-const http = require('http');
-const WebSocket = require('ws');
-const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
+const http=require('http'), fs=require('fs'), path=require('path'), crypto=require('crypto');
+const express=require('express'), WebSocket=require('ws'), webpush=require('web-push');
+const app=express(); const server=http.createServer(app); const wss=new WebSocket.Server({server});
+const PORT=process.env.PORT||3000;
+const DATA_DIR=process.env.DATA_DIR||path.join(__dirname);
+const DATA=path.join(DATA_DIR,'data.json'), BACKUP=path.join(DATA_DIR,'data.json.bak');
+const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/$/,'');
+const SUPABASE_KEY=String(process.env.SUPABASE_SERVICE_ROLE_KEY||'');
+const REMOTE_ENABLED=!!(SUPABASE_URL&&SUPABASE_KEY);
+try{fs.mkdirSync(DATA_DIR,{recursive:true})}catch(e){console.error('Não foi possível criar DATA_DIR:',e)}
 
-let webpush = null;
-try {
-  webpush = require('web-push');
-} catch (_) {}
+app.use(express.json({limit:'12mb'})); app.use(express.static(path.join(__dirname,'www')));
+let db={users:[],contacts:{},messages:{},sessions:{},pushSubscriptions:{},pushKeys:null,notifications:{}};
 
-const app = express();
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
-
-const PORT = Number(process.env.PORT) || 10000;
-const DATA_FILE = path.join(__dirname, 'data.json');
-
-const SUPABASE_URL = String(
-  process.env.SUPABASE_URL || ''
-).trim().replace(/\/+$/, '');
-
-const SUPABASE_KEY = String(
-  process.env.SUPABASE_SERVICE_ROLE_KEY || ''
-).trim();
-
-app.use(express.json({ limit: '5mb' }));
-app.use(express.urlencoded({ extended: true }));
-
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader(
-    'Access-Control-Allow-Headers',
-    'Content-Type, Authorization, X-Session-Token'
-  );
-  res.setHeader(
-    'Access-Control-Allow-Methods',
-    'GET,POST,PUT,PATCH,DELETE,OPTIONS'
-  );
-
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(204);
-  }
-
-  next();
-});
-
-app.use(express.static(path.join(__dirname, 'public')));
-
-function emptyDB() {
-  return {
-    users: [],
-    contacts: {},
-    messages: {},
-    pushSubscriptions: {},
-    settings: {}
-  };
+function normalizeDB(x){
+  db=x&&typeof x==='object'?x:db;
+  db.users??=[]; db.contacts??={}; db.messages??={}; db.sessions??={}; db.pushSubscriptions??={}; db.pushKeys??=null; db.notifications??={};
+  return db;
 }
-
-function normalizeDB(value) {
-  const d = value && typeof value === 'object' ? value : {};
-
-  if (!Array.isArray(d.users)) d.users = [];
-  if (!d.contacts || typeof d.contacts !== 'object') {
-    d.contacts = {};
-  }
-  if (!d.messages || typeof d.messages !== 'object') {
-    d.messages = {};
-  }
-  if (
-    !d.pushSubscriptions ||
-    typeof d.pushSubscriptions !== 'object'
-  ) {
-    d.pushSubscriptions = {};
-  }
-  if (!d.settings || typeof d.settings !== 'object') {
-    d.settings = {};
-  }
-
-  return d;
+function readLocal(){
+  try{
+    if(fs.existsSync(DATA)) return JSON.parse(fs.readFileSync(DATA,'utf8'));
+    if(fs.existsSync(BACKUP)) return JSON.parse(fs.readFileSync(BACKUP,'utf8'));
+  }catch(e){console.error('Falha ao ler armazenamento local:',e)}
+  return null;
 }
-
-let db = emptyDB();
-
-/* =========================================================
-   ARQUIVO LOCAL
-========================================================= */
-
-function readLocal() {
-  try {
-    if (!fs.existsSync(DATA_FILE)) {
-      return emptyDB();
-    }
-
-    const raw = fs.readFileSync(DATA_FILE, 'utf8');
-
-    if (!raw.trim()) {
-      return emptyDB();
-    }
-
-    return normalizeDB(JSON.parse(raw));
-  } catch (error) {
-    console.error(
-      'Falha ao ler data.json:',
-      error.message
-    );
-
-    return emptyDB();
-  }
-}
-
-function writeLocal() {
-  try {
-    fs.writeFileSync(
-      DATA_FILE,
-      JSON.stringify(db, null, 2),
-      'utf8'
-    );
-
-    return true;
-  } catch (error) {
-    console.error(
-      'Falha ao salvar data.json:',
-      error.message
-    );
-
-    return false;
-  }
-}
-
-/* =========================================================
-   SUPABASE
-========================================================= */
-
-function supabaseConfigured() {
-  return Boolean(SUPABASE_URL && SUPABASE_KEY);
-}
-
-function supabaseHeaders(extra = {}) {
-  return {
-    apikey: SUPABASE_KEY,
-    Authorization: `Bearer ${SUPABASE_KEY}`,
-    'Content-Type': 'application/json',
-    ...extra
-  };
-}
-
-async function supabaseRequest(urlOrPath, options = {}) {
-  if (!supabaseConfigured()) {
-    throw new Error(
-      'Supabase não configurado.'
-    );
-  }
-
-  let url;
-
-  if (/^https?:\/\//i.test(String(urlOrPath))) {
-    url = String(urlOrPath);
-  } else {
-    url = new URL(
-      `/rest/v1/${String(urlOrPath).replace(/^\/+/, '')}`,
-      `${SUPABASE_URL}/`
-    ).toString();
-  }
-
-  const response = await fetch(url, {
-    method: options.method || 'GET',
-    headers: supabaseHeaders(options.headers || {}),
-    body: options.body
+async function supabaseRequest(pathname,options={}){
+  if(!REMOTE_ENABLED) return null;
+  const r=await fetch(SUPABASE_URL+'/rest/v1/'+pathname,{
+    ...options,
+    headers:{apikey:SUPABASE_KEY,Authorization:'Bearer '+SUPABASE_KEY,'Content-Type':'application/json',Prefer:'return=representation',...(options.headers||{})}
   });
-
-  const text = await response.text();
-
-  let data = null;
-
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch (_) {
-    data = text;
-  }
-
-  if (!response.ok) {
-    const error = new Error(
-      `Supabase ${response.status}: ${
-        typeof data === 'string'
-          ? data
-          : JSON.stringify(data)
-      }`
-    );
-
-    error.status = response.status;
-    error.supabaseData = data;
-
-    throw error;
-  }
-
-  return data;
+  if(!r.ok){const body=await r.text().catch(()=> '');throw new Error(`Supabase ${r.status}: ${body.slice(0,500)}`)}
+  const text=await r.text(); return text?JSON.parse(text):null;
 }
-
-async function loadRemote() {
-  if (!supabaseConfigured()) {
-    return {
-      ok: false,
-      found: false,
-      error: new Error(
-        'Supabase não configurado.'
-      )
-    };
-  }
-
-  const url = new URL(
-    '/rest/v1/linka_state',
-    `${SUPABASE_URL}/`
-  );
-
-  url.searchParams.set('id', 'eq.1');
-  url.searchParams.set(
-    'select',
-    'id,data,updated_at'
-  );
-  url.searchParams.set('limit', '1');
-
-  try {
-    const rows = await supabaseRequest(
-      url.toString()
-    );
-
-    if (
-      !Array.isArray(rows) ||
-      rows.length === 0
-    ) {
-      return {
-        ok: true,
-        found: false,
-        data: null
-      };
-    }
-
-    return {
-      ok: true,
-      found: true,
-      data: normalizeDB(rows[0].data)
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      found: false,
-      error
-    };
+async function loadRemote(){
+  if(!REMOTE_ENABLED)return {enabled:false,exists:false,data:null};
+  try{
+    const rows=await supabaseRequest('linka_state?id=eq.1&select=data,updated_at',{method:'GET'});
+    if(!Array.isArray(rows)) throw new Error('Resposta inválida do Supabase ao carregar o banco.');
+    if(!rows.length) return {enabled:true,exists:false,data:null};
+    return {enabled:true,exists:true,data:rows[0]?.data||null};
+  }catch(e){
+    console.error('Falha ao carregar banco Supabase:',e);
+    throw new Error('Não foi possível carregar o banco do Supabase. O servidor foi impedido de inicializar para evitar apagar os dados remotos.');
   }
 }
-
-async function pushRemote() {
-  const url = new URL(
-    '/rest/v1/linka_state',
-    `${SUPABASE_URL}/`
-  );
-
-  url.searchParams.set(
-    'on_conflict',
-    'id'
-  );
-
-  await supabaseRequest(
-    url.toString(),
-    {
-      method: 'POST',
-
-      headers: {
-        Prefer:
-          'resolution=merge-duplicates,return=minimal'
-      },
-
-      body: JSON.stringify([
-        {
-          id: 1,
-          data: db,
-          updated_at:
-            new Date().toISOString()
-        }
-      ])
-    }
-  );
+let saveTimer=null, saveRunning=false, saveAgain=false;
+function writeLocal(){
+  try{
+    const tmp=DATA+'.tmp', text=JSON.stringify(db);
+    fs.writeFileSync(tmp,text);
+    if(fs.existsSync(DATA)){try{fs.copyFileSync(DATA,BACKUP)}catch(e){}}
+    fs.renameSync(tmp,DATA);
+  }catch(e){console.error('Falha ao salvar localmente:',e)}
 }
-
-let remoteAvailable = false;
-let saveTimer = null;
-let saveRunning = false;
-
-function schedulePersist() {
+async function pushRemote(snapshot){
+  if(!REMOTE_ENABLED)return;
+  try{
+    await supabaseRequest('linka_state?on_conflict=id',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({id:1,data:snapshot,updated_at:new Date().toISOString()})});
+  }catch(e){console.error('Falha ao salvar no Supabase:',e)}
+}
+function save(){
   writeLocal();
-
+  if(!REMOTE_ENABLED)return;
   clearTimeout(saveTimer);
-
-  saveTimer = setTimeout(
-    () => persistRemote(),
-    500
-  );
+  saveTimer=setTimeout(async()=>{
+    if(saveRunning){saveAgain=true;return}
+    saveRunning=true; saveAgain=false;
+    const snapshot=JSON.parse(JSON.stringify(db));
+    await pushRemote(snapshot);
+    saveRunning=false;
+    if(saveAgain)save();
+  },250);
 }
 
-async function persistRemote() {
-  if (
-    !remoteAvailable ||
-    saveRunning
-  ) {
-    return;
+function id(){return crypto.randomBytes(12).toString('hex')}
+function hash(p,s=crypto.randomBytes(16).toString('hex')){return {s,h:crypto.scryptSync(p,s,64).toString('hex')}}
+function check(p,u){try{return crypto.timingSafeEqual(Buffer.from(hash(p,u.s).h,'hex'),Buffer.from(u.h,'hex'))}catch{return false}}
+function safe(u,self=false){return {id:u.id,username:u.username,name:u.name,status:u.status,photo:u.photo||'',...(self?{chatBg:u.chatBg||''}:{}),lastSeen:u.lastSeen||u.createdAt,online:isUserOnline(u.id),createdAt:u.createdAt}}
+function isUserOnline(uid){for(const [token,idv] of sessions)if(idv===uid&&[...wss.clients].some(c=>c.readyState===1&&c.token===token))return true;const u=db.users.find(x=>x.id===uid);return !!(u&&u.lastSeen&&Date.now()-u.lastSeen<60000)}
+function touch(uid){const u=db.users.find(x=>x.id===uid);if(u){u.lastSeen=Date.now();save()}}
+const sessions=new Map();
+function auth(req,res,next){const t=(req.headers.authorization||'').replace('Bearer ','');let uid=sessions.get(t)||db.sessions[t];if(uid){sessions.set(t,uid)}if(!uid)return res.status(401).json({error:'Sessão expirada'});req.user=db.users.find(x=>x.id===uid);if(!req.user)return res.status(401).json({error:'Usuário não encontrado'});next()}
+function pair(a,b){return [a,b].sort().join(':')}
+function sendUser(uid,msg){for(const [token,idv] of sessions){if(idv!==uid)continue;for(const c of wss.clients)if(c.readyState===1&&c.token===token)c.send(JSON.stringify(msg))}}
+function addNotification(uid,n){db.notifications[uid]??=[];const item={id:id(),createdAt:Date.now(),read:false,...n};db.notifications[uid].unshift(item);db.notifications[uid]=db.notifications[uid].slice(0,100);save();sendUser(uid,{type:'notification',notification:item});return item}
+async function pushUser(uid,payload){const list=db.pushSubscriptions[uid]||[];if(!list.length)return;const next=[];for(const sub of list){try{await webpush.sendNotification(sub,JSON.stringify(payload),{TTL:60});next.push(sub)}catch(e){if(e.statusCode!==404&&e.statusCode!==410)next.push(sub)}}if(next.length!==list.length){db.pushSubscriptions[uid]=next;save()}}
+
+app.post('/api/register',(req,res)=>{let {name,username,password}=req.body||{};name=String(name||'').trim();username=String(username||'').trim().toLowerCase().replace(/^@/,'');password=String(password||'');if(name.length<2||username.length<3||password.length<6)return res.status(400).json({error:'Use nome, usuário com pelo menos 3 caracteres e senha com 6 caracteres.'});if(!/^[a-z0-9._-]+$/.test(username))return res.status(400).json({error:'Usuário: apenas letras, números, ponto, _ ou -.'});if(db.users.some(u=>u.username===username))return res.status(409).json({error:'Esse usuário já existe.'});const x=hash(password),u={id:id(),name,username,status:'Disponível',photo:'',s:x.s,h:x.h,createdAt:Date.now()};db.users.push(u);db.contacts[u.id]=[];save();const token=id();sessions.set(token,u.id);db.sessions[token]=u.id;save();res.json({token,user:safe(u,true)});});
+app.post('/api/login',(req,res)=>{const username=String(req.body?.username||'').trim().toLowerCase().replace(/^@/,'');const password=String(req.body?.password||'');const u=db.users.find(x=>x.username===username);if(!u||!check(password,u))return res.status(401).json({error:'Usuário ou senha inválidos.'});const token=id();sessions.set(token,u.id);db.sessions[token]=u.id;save();res.json({token,user:safe(u,true)});});
+app.post('/api/logout',auth,(req,res)=>{touch(req.user.id);for(const [t,u] of sessions)if(u===req.user.id){sessions.delete(t);delete db.sessions[t]}for(const t of Object.keys(db.sessions))if(db.sessions[t]===req.user.id)delete db.sessions[t];save();res.json({ok:true})});
+app.post('/api/ping',auth,(req,res)=>{touch(req.user.id);res.json({ok:true,lastSeen:req.user.lastSeen})});
+app.get('/api/me',auth,(req,res)=>res.json({user:safe(req.user,true)}));
+app.put('/api/me',auth,(req,res)=>{const {name,status,photo,chatBg}=req.body||{};if(typeof name==='string'&&name.trim())req.user.name=name.trim().slice(0,40);if(typeof status==='string')req.user.status=status.trim().slice(0,100);if(typeof photo==='string'&&photo.length<1500000)req.user.photo=photo;if(typeof chatBg==='string'&&chatBg.length<1500000)req.user.chatBg=chatBg;save();res.json({user:safe(req.user,true)});});
+app.get('/api/users',auth,(req,res)=>{const q=String(req.query.q||'').trim().toLowerCase().replace(/^@/,'');if(q.length<2)return res.json([]);res.json(db.users.filter(u=>u.id!==req.user.id&&(u.username.includes(q)||u.name.toLowerCase().includes(q))).slice(0,20).map(safe));});
+app.get('/api/contacts',auth,(req,res)=>{const ids=db.contacts[req.user.id]||[];res.json(ids.map(i=>db.users.find(u=>u.id===i)).filter(Boolean).map(safe));});
+app.get('/api/users/:id',auth,(req,res)=>{const u=db.users.find(x=>x.id===req.params.id);if(!u)return res.status(404).json({error:'Usuário não encontrado.'});res.json(safe(u));});
+app.post('/api/contacts/:id',auth,(req,res)=>{const other=db.users.find(u=>u.id===req.params.id);if(!other||other.id===req.user.id)return res.status(404).json({error:'Usuário não encontrado.'});db.contacts[req.user.id]??=[];if(!db.contacts[req.user.id].includes(other.id))db.contacts[req.user.id].push(other.id);save();const note=addNotification(other.id,{kind:'contact',title:'Novo contato',body:(req.user.name||'Alguém')+' adicionou você aos contatos.',from:req.user.id});sendUser(other.id,{type:'contact_added',by:safe(req.user)});pushUser(other.id,{title:note.title,body:note.body,icon:'/icon-192.png',badge:'/icon-192.png',data:{notificationId:note.id}}).catch(()=>{});res.json({user:safe(other)});});
+app.delete('/api/contacts/:id',auth,(req,res)=>{db.contacts[req.user.id]=(db.contacts[req.user.id]||[]).filter(x=>x!==req.params.id);save();res.json({ok:true})});
+app.get('/api/push/vapid-public-key',auth,(req,res)=>res.json({publicKey:process.env.VAPID_PUBLIC_KEY||db.pushKeys.publicKey}));
+app.post('/api/push/subscribe',auth,(req,res)=>{const sub=req.body?.subscription;if(!sub||!sub.endpoint||!sub.keys?.p256dh||!sub.keys?.auth)return res.status(400).json({error:'Assinatura de notificação inválida.'});db.pushSubscriptions[req.user.id]??=[];const list=db.pushSubscriptions[req.user.id];if(!list.some(x=>x.endpoint===sub.endpoint))list.push(sub);db.pushSubscriptions[req.user.id]=list.slice(-5);save();res.json({ok:true})});
+app.delete('/api/push/subscribe',auth,(req,res)=>{const endpoint=String(req.body?.endpoint||'');if(endpoint)db.pushSubscriptions[req.user.id]=(db.pushSubscriptions[req.user.id]||[]).filter(x=>x.endpoint!==endpoint);save();res.json({ok:true})});
+app.get('/api/notifications',auth,(req,res)=>{const list=db.notifications[req.user.id]||[];res.json(list.slice(0,100));});
+app.post('/api/notifications/read-all',auth,(req,res)=>{const list=db.notifications[req.user.id]||[];list.forEach(n=>n.read=true);save();res.json({ok:true});});
+app.post('/api/notifications/:id/read',auth,(req,res)=>{const n=(db.notifications[req.user.id]||[]).find(x=>x.id===req.params.id);if(!n)return res.status(404).json({error:'Notificação não encontrada.'});n.read=true;save();res.json({ok:true});});
+app.get('/api/messages/:id',auth,(req,res)=>{const other=req.params.id;if(!db.users.some(u=>u.id===other))return res.status(404).json({error:'Usuário não encontrado.'});res.json(db.messages[pair(req.user.id,other)]||[])});
+app.post('/api/messages/:id',auth,(req,res)=>{const other=req.params.id;const u=db.users.find(x=>x.id===other);if(!u)return res.status(404).json({error:'Usuário não encontrado.'});let m;if(req.body?.type==='audio'){const audio=String(req.body?.audio||'');if(!/^data:audio\/[A-Za-z0-9.+-]+(?:;[^,]*)?;base64,[A-Za-z0-9+/=]+$/.test(audio)||audio.length>10*1024*1024)return res.status(400).json({error:'Áudio inválido ou muito grande.'});m={id:id(),from:req.user.id,to:other,type:'audio',audio,createdAt:Date.now()};}else{const text=String(req.body?.text||'').trim();if(!text||text.length>4000)return res.status(400).json({error:'Mensagem inválida.'});m={id:id(),from:req.user.id,to:other,type:'text',text,createdAt:Date.now()};}const k=pair(req.user.id,other);db.messages[k]??=[];db.messages[k].push(m);db.messages[k]=db.messages[k].slice(-500);save();sendUser(other,{type:'message',message:m});const preview=m.type==='audio'?'Áudio recebido':m.text;const note=addNotification(other.id,{kind:'message',title:req.user.name||'Nova mensagem',body:preview,from:req.user.id,chatId:req.user.id});pushUser(other,{title:note.title,body:note.body,icon:'/icon-192.png',badge:'/icon-192.png',data:{chatId:req.user.id,notificationId:note.id}}).catch(()=>{});res.json(m);});
+app.get(/.*/,(req,res)=>res.sendFile(path.join(__dirname,'www','index.html')));
+wss.on('connection',(ws,req)=>{const token=new URL(req.url,'http://localhost').searchParams.get('token');const uid=sessions.get(token)||db.sessions[token];if(uid)sessions.set(token,uid);if(!uid){ws.close();return}ws.token=token;touch(uid);ws.on('message',buf=>{try{const d=JSON.parse(buf);if(d.type==='ping')touch(uid);if(d.type==='typing'&&d.to)sendUser(d.to,{type:'typing',from:uid,active:!!d.active})}catch{}});ws.on('close',()=>{touch(uid);sendUser(uid,{type:'presence',id:uid})});sendUser(uid,{type:'presence',id:uid})});
+
+async function boot(){
+  const remote=await loadRemote();
+
+  if(remote.enabled && remote.exists){
+    // O Supabase é a fonte oficial dos dados. Nunca substitua um banco remoto
+    // existente por um data.json local, especialmente após um restart do Render.
+    normalizeDB(remote.data);
+    console.log('Linka: dados carregados do Supabase.');
+  }else if(remote.enabled && !remote.exists){
+    // Só usamos o armazenamento local para a primeira inicialização, quando a
+    // tabela ainda não possui a linha id=1. Se não houver dados locais, criaremos
+    // um banco vazio e o enviaremos ao Supabase uma única vez.
+    normalizeDB(readLocal()||db);
+    console.log('Linka: linha id=1 não existe no Supabase; inicializando o banco remoto.');
+  }else{
+    normalizeDB(readLocal()||db);
   }
 
-  saveRunning = true;
+  if(!db.pushKeys){db.pushKeys=webpush.generateVAPIDKeys();}
+  writeLocal();
+  webpush.setVapidDetails(process.env.VAPID_SUBJECT||'mailto:linka@localhost',process.env.VAPID_PUBLIC_KEY||db.pushKeys.publicKey,process.env.VAPID_PRIVATE_KEY||db.pushKeys.privateKey);
 
-  try {
-    await pushRemote();
-  } catch (error) {
-    console.error(
-      'Falha ao salvar no Supabase:',
-      error.message
-    );
-
-    remoteAvailable = false;
-  } finally {
-    saveRunning = false;
-  }
+  if(REMOTE_ENABLED){
+    // Apenas cria/atualiza a linha quando o carregamento remoto foi bem-sucedido.
+    // Em caso de erro, loadRemote() lança e o processo termina sem apagar dados.
+    await pushRemote(JSON.parse(JSON.stringify(db)));
+    console.log('Linka: persistência Supabase ativada.');
+  }else console.warn('ATENÇÃO: SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY não configurados; os dados continuarão temporários no Render Free.');
+  server.listen(PORT,()=>console.log('Linka rodando na porta '+PORT));
 }
-
-/* =========================================================
-   UTILITÁRIOS
-========================================================= */
-
-function makeId() {
-  return crypto.randomUUID();
-}
-
-function clean(value, max = 5000) {
-  return String(
-    value == null ? '' : value
-  ).trim().slice(0, max);
-}
-
-function username(value) {
-  return clean(value, 60).toLowerCase();
-}
-
-function hashPassword(
-  password,
-  salt = crypto.randomBytes(16).toString('hex')
-) {
-  const hash = crypto
-    .pbkdf2Sync(
-      String(password),
-      salt,
-      120000,
-      64,
-      'sha512'
-    )
-    .toString('hex');
-
-  return `${salt}:${hash}`;
-}
-
-function verifyPassword(
-  password,
-  stored
-) {
-  const parts = String(
-    stored || ''
-  ).split(':');
-
-  if (
-    parts.length !== 2
-  ) {
-    return false;
-  }
-
-  const salt = parts[0];
-  const expected = parts[1];
-
-  const actual = crypto
-    .pbkdf2Sync(
-      String(password),
-      salt,
-      120000,
-      64,
-      'sha512'
-    )
-    .toString('hex');
-
-  return actual === expected;
-}
-
-function publicUser(user) {
-  if (!user) {
-    return null;
-  }
-
-  return {
-    id: user.id,
-    username: user.username,
-    name:
-      user.name ||
-      user.username,
-    avatar:
-      user.avatar || '',
-    status:
-      user.status || '',
-    createdAt:
-      user.createdAt || null
-  };
-}
-
-/* =========================================================
-   SESSÕES
-========================================================= */
-
-const sessions = new Map();
-const sockets = new Map();
-
-function tokenFromReq(req) {
-  const authorization =
-    String(
-      req.headers.authorization || ''
-    );
-
-  if (
-    /^Bearer /i.test(
-      authorization
-    )
-  ) {
-    return authorization
-      .slice(7)
-      .trim();
-  }
-
-  return clean(
-    req.headers['x-session-token'],
-    500
-  );
-}
-
-function currentUser(req) {
-  const token =
-    tokenFromReq(req);
-
-  const userId =
-    sessions.get(token);
-
-  if (!userId) {
-    return null;
-  }
-
-  return (
-    db.users.find(
-      user =>
-        user.id === userId
-    ) || null
-  );
-}
-
-function auth(
-  req,
-  res,
-  next
-) {
-  const user =
-    currentUser(req);
-
-  if (!user) {
-    return res.status(401).json({
-      ok: false,
-      error:
-        'Não autenticado.'
-    });
-  }
-
-  req.user = user;
-
-  next();
-}
-
-/* =========================================================
-   STATUS
-========================================================= */
-
-app.get(
-  '/api/ping',
-  (req, res) => {
-    res.json({
-      ok: true,
-      online: true,
-      time:
-        new Date().toISOString()
-    });
-  }
-);
-
-app.get(
-  '/api/health',
-  (req, res) => {
-    res.json({
-      ok: true,
-      supabaseConfigured:
-        supabaseConfigured(),
-      supabaseConnected:
-        remoteAvailable
-    });
-  }
-);
-
-/* =========================================================
-   REGISTRO
-========================================================= */
-
-app.post(
-  '/api/register',
-  (req, res) => {
-    const uname =
-      username(
-        req.body.username
-      );
-
-    const password =
-      String(
-        req.body.password || ''
-      );
-
-    const name =
-      clean(
-        req.body.name ||
-          uname,
-        80
-      );
-
-    if (uname.length < 3) {
-      return res.status(400).json({
-        ok: false,
-        error:
-          'O usuário precisa ter pelo menos 3 caracteres.'
-      });
-    }
-
-    if (password.length < 4) {
-      return res.status(400).json({
-        ok: false,
-        error:
-          'A senha precisa ter pelo menos 4 caracteres.'
-      });
-    }
-
-    const exists =
-      db.users.some(
-        user =>
-          username(
-            user.username
-          ) === uname
-      );
-
-    if (exists) {
-      return res.status(409).json({
-        ok: false,
-        error:
-          'Esse usuário já existe.'
-      });
-    }
-
-    const user = {
-      id: makeId(),
-      username: uname,
-      name,
-      password:
-        hashPassword(password),
-      avatar: '',
-      status: '',
-      createdAt:
-        new Date().toISOString()
-    };
-
-    db.users.push(user);
-
-    db.contacts[user.id] =
-      [];
-
-    db.pushSubscriptions[
-      user.id
-    ] = [];
-
-    schedulePersist();
-
-    const token =
-      makeId();
-
-    sessions.set(
-      token,
-      user.id
-    );
-
-    res.json({
-      ok: true,
-      token,
-      user:
-        publicUser(user)
-    });
-  }
-);
-
-/* =========================================================
-   LOGIN
-========================================================= */
-
-app.post(
-  '/api/login',
-  (req, res) => {
-    const uname =
-      username(
-        req.body.username
-      );
-
-    const user =
-      db.users.find(
-        item =>
-          username(
-            item.username
-          ) === uname
-      );
-
-    if (
-      !user ||
-      !verifyPassword(
-        req.body.password,
-        user.password
-      )
-    ) {
-      return res.status(401).json({
-        ok: false,
-        error:
-          'Usuário ou senha incorretos.'
-      });
-    }
-
-    const token =
-      makeId();
-
-    sessions.set(
-      token,
-      user.id
-    );
-
-    res.json({
-      ok: true,
-      token,
-      user:
-        publicUser(user)
-    });
-  }
-);
-
-/* =========================================================
-   LOGOUT / ME
-========================================================= */
-
-app.post(
-  '/api/logout',
-  auth,
-  (req, res) => {
-    sessions.delete(
-      tokenFromReq(req)
-    );
-
-    res.json({
-      ok: true
-    });
-  }
-);
-
-app.get(
-  '/api/me',
-  auth,
-  (req, res) => {
-    res.json({
-      ok: true,
-      user:
-        publicUser(req.user)
-    });
-  }
-);
-
-/* =========================================================
-   PERFIL
-========================================================= */
-
-async function updateProfile(
-  req,
-  res
-) {
-  req.user.name =
-    clean(
-      req.body.name ||
-        req.user.name,
-      80
-    );
-
-  req.user.status =
-    clean(
-      req.body.status,
-      160
-    );
-
-  if (
-    req.body.avatar !==
-    undefined
-  ) {
-    req.user.avatar =
-      clean(
-        req.body.avatar,
-        500000
-      );
-  }
-
-  schedulePersist();
-
-  res.json({
-    ok: true,
-    user:
-      publicUser(req.user)
-  });
-}
-
-app.put(
-  '/api/profile',
-  auth,
-  updateProfile
-);
-
-app.post(
-  '/api/profile',
-  auth,
-  updateProfile
-);
-
-/* =========================================================
-   BUSCA DE USUÁRIOS
-========================================================= */
-
-function searchUsers(
-  req,
-  res
-) {
-  const q =
-    clean(
-      req.query.q,
-      100
-    ).toLowerCase();
-
-  const users =
-    db.users
-      .filter(
-        user =>
-          user.id !==
-          req.user.id
-      )
-      .filter(user => {
-        if (!q) {
-          return true;
-        }
-
-        return (
-          username(
-            user.username
-          ).includes(q) ||
-          String(
-            user.name || ''
-          )
-            .toLowerCase()
-            .includes(q)
-        );
-      })
-      .slice(0, 50)
-      .map(publicUser);
-
-  res.json({
-    ok: true,
-    users
-  });
-}
-
-app.get(
-  '/api/users/search',
-  auth,
-  searchUsers
-);
-
-app.get(
-  '/api/search',
-  auth,
-  searchUsers
-);
-
-/* =========================================================
-   CONTATOS
-========================================================= */
-
-function contactIds(
-  userId
-) {
-  if (
-    !Array.isArray(
-      db.contacts[userId]
-    )
-  ) {
-    db.contacts[userId] =
-      [];
-  }
-
-  return db.contacts[userId];
-}
-
-app.get(
-  '/api/contacts',
-  auth,
-  (req, res) => {
-    const contacts =
-      contactIds(
-        req.user.id
-      )
-        .map(id =>
-          db.users.find(
-            user =>
-              user.id === id
-          )
-        )
-        .filter(Boolean)
-        .map(publicUser);
-
-    res.json({
-      ok: true,
-      contacts
-    });
-  }
-);
-
-app.post(
-  '/api/contacts',
-  auth,
-  (req, res) => {
-    const id =
-      clean(
-        req.body.userId ||
-          req.body.contactId,
-        100
-      );
-
-    const user =
-      db.users.find(
-        item =>
-          item.id === id
-      );
-
-    if (!user) {
-      return res.status(404).json({
-        ok: false,
-        error:
-          'Usuário não encontrado.'
-      });
-    }
-
-    if (
-      user.id ===
-      req.user.id
-    ) {
-      return res.status(400).json({
-        ok: false,
-        error:
-          'Você não pode adicionar você mesmo.'
-      });
-    }
-
-    const list =
-      contactIds(
-        req.user.id
-      );
-
-    if (
-      !list.includes(id)
-    ) {
-      list.push(id);
-    }
-
-    schedulePersist();
-
-    res.json({
-      ok: true,
-      contact:
-        publicUser(user)
-    });
-  }
-);
-
-app.delete(
-  '/api/contacts/:id',
-  auth,
-  (req, res) => {
-    db.contacts[
-      req.user.id
-    ] = contactIds(
-      req.user.id
-    ).filter(
-      id =>
-        id !==
-        req.params.id
-    );
-
-    schedulePersist();
-
-    res.json({
-      ok: true
-    });
-  }
-);
-
-/* =========================================================
-   MENSAGENS
-========================================================= */
-
-function conversationKey(
-  a,
-  b
-) {
-  return [a, b]
-    .sort()
-    .join('__');
-}
-
-function conversation(
-  a,
-  b
-) {
-  const key =
-    conversationKey(
-      a,
-      b
-    );
-
-  if (
-    !Array.isArray(
-      db.messages[key]
-    )
-  ) {
-    db.messages[key] =
-      [];
-  }
-
-  return db.messages[key];
-}
-
-function getOtherId(req) {
-  return clean(
-    req.params.userId ||
-      req.query.userId ||
-      req.query.to ||
-      req.query.contactId,
-    100
-  );
-}
-
-app.get(
-  '/api/messages/:userId',
-  auth,
-  (req, res) => {
-    res.json({
-      ok: true,
-      messages:
-        conversation(
-          req.user.id,
-          getOtherId(req)
-        )
-    });
-  }
-);
-
-app.get(
-  '/api/messages',
-  auth,
-  (req, res) => {
-    res.json({
-      ok: true,
-      messages:
-        conversation(
-          req.user.id,
-          getOtherId(req)
-        )
-    });
-  }
-);
-
-/* =========================================================
-   WEBSOCKET
-========================================================= */
-
-function sendToUser(
-  userId,
-  data
-) {
-  const set =
-    sockets.get(userId);
-
-  if (!set) {
-    return;
-  }
-
-  for (const ws of set) {
-    if (
-      ws.readyState ===
-      WebSocket.OPEN
-    ) {
-      try {
-        ws.send(
-          JSON.stringify(data)
-        );
-      } catch (_) {}
-    }
-  }
-}
-
-/* =========================================================
-   WEB PUSH
-========================================================= */
-
-const vapidReady =
-  (() => {
-    if (
-      !webpush ||
-      !process.env
-        .VAPID_PUBLIC_KEY ||
-      !process.env
-        .VAPID_PRIVATE_KEY
-    ) {
-      return false;
-    }
-
-    try {
-      webpush.setVapidDetails(
-        process.env
-          .VAPID_EMAIL ||
-          'mailto:admin@example.com',
-        process.env
-          .VAPID_PUBLIC_KEY,
-        process.env
-          .VAPID_PRIVATE_KEY
-      );
-
-      return true;
-    } catch (error) {
-      console.error(
-        'Falha VAPID:',
-        error.message
-      );
-
-      return false;
-    }
-  })();
-
-app.get(
-  '/api/push/public-key',
-  auth,
-  (req, res) => {
-    res.json({
-      ok: true,
-      publicKey:
-        process.env
-          .VAPID_PUBLIC_KEY ||
-        ''
-    });
-  }
-);
-
-app.post(
-  '/api/push/subscribe',
-  auth,
-  (req, res) => {
-    const subscription =
-      req.body.subscription ||
-      req.body;
-
-    if (
-      !subscription ||
-      !subscription.endpoint
-    ) {
-      return res.status(400).json({
-        ok: false,
-        error:
-          'Assinatura inválida.'
-      });
-    }
-
-    if (
-      !Array.isArray(
-        db.pushSubscriptions[
-          req.user.id
-        ]
-      )
-    ) {
-      db.pushSubscriptions[
-        req.user.id
-      ] = [];
-    }
-
-    const list =
-      db.pushSubscriptions[
-        req.user.id
-      ];
-
-    const exists =
-      list.some(
-        item =>
-          item &&
-          item.endpoint ===
-            subscription.endpoint
-      );
-
-    if (!exists) {
-      list.push(
-        subscription
-      );
-    }
-
-    schedulePersist();
-
-    res.json({
-      ok: true
-    });
-  }
-);
-
-app.post(
-  '/api/push/unsubscribe',
-  auth,
-  (req, res) => {
-    const endpoint =
-      clean(
-        req.body.endpoint,
-        5000
-      );
-
-    db.pushSubscriptions[
-      req.user.id
-    ] = (
-      db.pushSubscriptions[
-        req.user.id
-      ] || []
-    ).filter(
-      item =>
-        !endpoint ||
-        item.endpoint !==
-          endpoint
-    );
-
-    schedulePersist();
-
-    res.json({
-      ok: true
-    });
-  }
-);
-
-async function sendPush(
-  userId,
-  payload
-) {
-  if (
-    !vapidReady ||
-    !webpush
-  ) {
-    return;
-  }
-
-  const list =
-    db.pushSubscriptions[
-      userId
-    ];
-
-  if (
-    !Array.isArray(list)
-  ) {
-    return;
-  }
-
-  const invalid =
-    new Set();
-
-  for (const subscription of list) {
-    try {
-      await webpush.sendNotification(
-        subscription,
-        JSON.stringify(payload)
-      );
-    } catch (error) {
-      if (
-        error.statusCode ===
-          404 ||
-        error.statusCode ===
-          410
-      ) {
-        invalid.add(
-          subscription.endpoint
-        );
-      }
-    }
-  }
-
-  if (invalid.size) {
-    db.pushSubscriptions[
-      userId
-    ] = list.filter(
-      item =>
-        !invalid.has(
-          item.endpoint
-        )
-    );
-
-    schedulePersist();
-  }
-}
-
-/* =========================================================
-   ENVIO DE MENSAGENS
-========================================================= */
-
-async function sendMessage(
-  req,
-  res
-) {
-  try {
-    const to =
-      clean(
-        req.body.to ||
-          req.body.userId ||
-          req.body.receiverId ||
-          req.body.contactId,
-        100
-      );
-
-    const text =
-      clean(
-        req.body.text !==
-          undefined
-          ? req.body.text
-          : req.body.message,
-        5000
-      );
-
-    const receiver =
-      db.users.find(
-        user =>
-          user.id === to
-      );
-
-    if (
-      !receiver ||
-      !text
-    ) {
-      return res.status(400).json({
- 
+boot().catch(e=>{console.error('Falha ao iniciar o Linka:',e);process.exit(1)});

@@ -127,9 +127,9 @@ function setupPeer(peerId,callId){
   pc.ontrack=e=>{const a=$('#callRemoteAudio');if(a){a.srcObject=e.streams[0];a.play?.().catch(()=>{})}};
   pc.oniceconnectionstatechange=()=>{
     const st=pc.iceConnectionState;
-    if(st==='checking'){$('#callStatus')?.textContent='Conectando…'}
-    if(st==='connected'||st==='completed'){$('#callStatus')?.textContent='Conectado'}
-    if(st==='failed'){console.warn('WebRTC ICE falhou');$('#callStatus')?.textContent='Não foi possível conectar';}
+    if(st==='checking'){const el=$('#callStatus');if(el)el.textContent='Conectando…'}
+    if(st==='connected'||st==='completed'){const el=$('#callStatus');if(el)el.textContent='Conectado'}
+    if(st==='failed'){console.warn('WebRTC ICE falhou');const el=$('#callStatus');if(el)el.textContent='Não foi possível conectar';}
   };
   pc.onconnectionstatechange=()=>{
     if(pc.connectionState==='connected')$('#callStatus').textContent='Conectado';

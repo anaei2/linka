@@ -27,3 +27,7 @@ A Service Account é segredo de servidor. A configuração Web e a chave VAPID p
 
 ### Chamada de voz
 A chamada usa WebRTC com STUN e TURN como fallback. O TURN público é usado apenas como fallback para redes que não permitem conexão P2P direta.
+
+
+## Chamada por sala
+A chamada agora usa uma sala de conexão: os dois participantes digitam o mesmo código (por padrão, **L**) antes da negociação WebRTC começar. O código é apenas uma etapa de sincronização; o áudio continua sendo WebRTC.

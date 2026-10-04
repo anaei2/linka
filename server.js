@@ -20,15 +20,17 @@ const messaging=firebase.messaging();
 messaging.onBackgroundMessage((payload)=>{
   const n=payload.notification||{};
   const d=payload.data||{};
-  const title=n.title||'Linka';
-  const body=n.body||'Nova mensagem';
-  self.registration.showNotification(title,{
+  const title=String(n.title||'Linka');
+  const body=String(n.body||'Nova mensagem');
+  const options={
     body,
     icon:n.icon||'/icon-192.png',
     badge:n.badge||'/icon-192.png',
     tag:d.chatId?'linka-'+d.chatId:'linka',
+    renotify:true,
     data:d
-  });
+  };
+  return self.registration.showNotification(title,options);
 });
 self.addEventListener('notificationclick',(event)=>{event.notification.close();const d=event.notification.data||{};const url=d.chatId?'/?chat='+encodeURIComponent(d.chatId):'/';event.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(cs=>{for(const c of cs){if('focus' in c){c.navigate(url);return c.focus()}}return clients.openWindow(url)}));});`);
 });

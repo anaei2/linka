@@ -17,6 +17,19 @@ app.get('/firebase-messaging-sw.js',(req,res)=>{
 importScripts('https://www.gstatic.com/firebasejs/11.10.0/firebase-messaging-compat.js');
 firebase.initializeApp(${JSON.stringify(c)});
 const messaging=firebase.messaging();
+messaging.onBackgroundMessage((payload)=>{
+  const n=payload.notification||{};
+  const d=payload.data||{};
+  const title=n.title||'Linka';
+  const body=n.body||'Nova mensagem';
+  self.registration.showNotification(title,{
+    body,
+    icon:n.icon||'/icon-192.png',
+    badge:n.badge||'/icon-192.png',
+    tag:d.chatId?'linka-'+d.chatId:'linka',
+    data:d
+  });
+});
 self.addEventListener('notificationclick',(event)=>{event.notification.close();const d=event.notification.data||{};const url=d.chatId?'/?chat='+encodeURIComponent(d.chatId):'/';event.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(cs=>{for(const c of cs){if('focus' in c){c.navigate(url);return c.focus()}}return clients.openWindow(url)}));});`);
 });
 app.use(express.static(path.join(__dirname,'www')));

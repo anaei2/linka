@@ -1,1361 +1,959 @@
-const http=require('http'), fs=require('fs'), path=require('path'), crypto=require('crypto');
-const express=require('express'), WebSocket=require('ws'), webpush=require('web-push');
+const express = require("express");
+const http = require("http");
+const WebSocket = require("ws");
+const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 
-const app=express();
-const server=http.createServer(app);
-const wss=new WebSocket.Server({server});
+let webpush = null;
+try {
+  webpush = require("web-push");
+} catch (_) {}
 
-const PORT=process.env.PORT||3000;
-const DATA_DIR=process.env.DATA_DIR||path.join(__dirname);
-const DATA=path.join(DATA_DIR,'data.json');
-const BACKUP=path.join(DATA_DIR,'data.json.bak');
+const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
 
-const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/$/,'');
-const SUPABASE_KEY=String(process.env.SUPABASE_SERVICE_ROLE_KEY||'');
-const REMOTE_ENABLED=!!(SUPABASE_URL&&SUPABASE_KEY);
+const PORT = process.env.PORT || 10000;
 
-try{
-  fs.mkdirSync(DATA_DIR,{recursive:true});
-}catch(e){
-  console.error('Não foi possível criar DATA_DIR:',e);
-}
+const SUPABASE_URL = String(process.env.SUPABASE_URL || "").trim().replace(/\/+$/, "");
+const SUPABASE_KEY = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
 
-app.use(express.json({limit:'12mb'}));
-app.use(express.static(path.join(__dirname,'www')));
+const DATA_FILE = path.join(__dirname, "data.json");
 
-let db={
-  users:[],
-  contacts:{},
-  messages:{},
-  sessions:{},
-  pushSubscriptions:{},
-  pushKeys:null
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true }));
+
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
+app.use(express.static(path.join(__dirname, "public")));
+
+const DEFAULT_DB = {
+  users: [],
+  contacts: {},
+  messages: {},
+  pushSubscriptions: {},
+  settings: {}
 };
 
-function normalizeDB(x){
-  db=x&&typeof x==='object'?x:db;
-  db.users??=[];
-  db.contacts??={};
-  db.messages??={};
-  db.sessions??={};
-  db.pushSubscriptions??={};
-  db.pushKeys??=null;
-  return db;
+let db = normalizeDB(DEFAULT_DB);
+let remoteReady = false;
+let remoteAvailable = false;
+
+const sessions = new Map();
+const sockets = new Map();
+
+function normalizeDB(value) {
+  const d = value && typeof value === "object" ? value : {};
+
+  if (!Array.isArray(d.users)) d.users = [];
+  if (!d.contacts || typeof d.contacts !== "object") d.contacts = {};
+  if (!d.messages || typeof d.messages !== "object") d.messages = {};
+  if (!d.pushSubscriptions || typeof d.pushSubscriptions !== "object") {
+    d.pushSubscriptions = {};
+  }
+  if (!d.settings || typeof d.settings !== "object") d.settings = {};
+
+  return d;
 }
 
-function readLocal(){
-  try{
-    if(fs.existsSync(DATA))
-      return JSON.parse(fs.readFileSync(DATA,'utf8'));
-
-    if(fs.existsSync(BACKUP))
-      return JSON.parse(fs.readFileSync(BACKUP,'utf8'));
-  }catch(e){
-    console.error('Falha ao ler armazenamento local:',e);
-  }
-
-  return null;
-}
-
-async function supabaseRequest(pathname,options={}){
-  if(!REMOTE_ENABLED)return null;
-
-  const cleanPath=String(pathname||'').replace(/^\/+/,'');
-
-  const r=await fetch(
-    SUPABASE_URL+'/rest/v1/'+cleanPath,
-    {
-      ...options,
-      headers:{
-        apikey:SUPABASE_KEY,
-        Authorization:'Bearer '+SUPABASE_KEY,
-        'Content-Type':'application/json',
-        Prefer:'return=representation',
-        ...(options.headers||{})
-      }
-    }
-  );
-
-  if(!r.ok){
-    const body=await r.text().catch(()=>'');
-    throw new Error(
-      `Supabase ${r.status}: ${body.slice(0,500)}`
-    );
-  }
-
-  const text=await r.text();
-
-  return text?JSON.parse(text):null;
-}
-
-async function loadRemote(){
-
-  if(!REMOTE_ENABLED){
-    return {
-      enabled:false,
-      found:false,
-      data:null
-    };
-  }
-
-  try{
-
-    const rows=await supabaseRequest(
-      'linka_state?id=eq.1&select=data,updated_at',
-      {method:'GET'}
-    );
-
-    if(rows?.[0]?.data){
-
-      return {
-        enabled:true,
-        found:true,
-        data:rows[0].data
-      };
+function readLocal() {
+  try {
+    if (!fs.existsSync(DATA_FILE)) {
+      return normalizeDB(DEFAULT_DB);
     }
 
-    return {
-      enabled:true,
-      found:false,
-      data:null
-    };
+    const raw = fs.readFileSync(DATA_FILE, "utf8");
+    if (!raw.trim()) return normalizeDB(DEFAULT_DB);
 
-  }catch(e){
-
-    console.error(
-      'ERRO CRÍTICO ao carregar banco Supabase:',
-      e
-    );
-
-    return {
-      enabled:true,
-      found:false,
-      data:null,
-      error:true
-    };
+    return normalizeDB(JSON.parse(raw));
+  } catch (err) {
+    console.error("Falha ao ler data.json:", err);
+    return normalizeDB(DEFAULT_DB);
   }
 }
 
-let saveTimer=null;
-let saveRunning=false;
-let saveAgain=false;
-
-function writeLocal(){
-
-  try{
-
-    const tmp=DATA+'.tmp';
-
-    fs.writeFileSync(
-      tmp,
-      JSON.stringify(db)
-    );
-
-    if(fs.existsSync(DATA)){
-      try{
-        fs.copyFileSync(DATA,BACKUP);
-      }catch(e){}
-    }
-
-    fs.renameSync(tmp,DATA);
-
-  }catch(e){
-
-    console.error(
-      'Falha ao salvar localmente:',
-      e
-    );
-  }
-}
-
-async function pushRemote(snapshot){
-
-  if(!REMOTE_ENABLED)return;
-
-  try{
-
-    await supabaseRequest(
-      'linka_state?on_conflict=id',
-      {
-        method:'POST',
-        headers:{
-          Prefer:
-          'resolution=merge-duplicates,return=minimal'
-        },
-        body:JSON.stringify({
-          id:1,
-          data:snapshot,
-          updated_at:new Date().toISOString()
-        })
-      }
-    );
-
-  }catch(e){
-
-    console.error(
-      'Falha ao salvar no Supabase:',
-      e
-    );
-  }
-}
-
-function save(){
-
-  writeLocal();
-
-  if(!REMOTE_ENABLED)return;
-
-  clearTimeout(saveTimer);
-
-  saveTimer=setTimeout(async()=>{
-
-    if(saveRunning){
-      saveAgain=true;
-      return;
-    }
-
-    saveRunning=true;
-    saveAgain=false;
-
-    const snapshot=
-      JSON.parse(JSON.stringify(db));
-
-    await pushRemote(snapshot);
-
-    saveRunning=false;
-
-    if(saveAgain){
-      save();
-    }
-
-  },250);
-}
-
-function id(){
-  return crypto.randomBytes(12).toString('hex');
-}
-
-function hash(
-  p,
-  s=crypto.randomBytes(16).toString('hex')
-){
-  return {
-    s,
-    h:crypto.scryptSync(
-      p,
-      s,
-      64
-    ).toString('hex')
-  };
-}
-
-function check(p,u){
-
-  try{
-
-    return crypto.timingSafeEqual(
-      Buffer.from(
-        hash(p,u.s).h,
-        'hex'
-      ),
-      Buffer.from(
-        u.h,
-        'hex'
-      )
-    );
-
-  }catch{
-
+function writeLocal() {
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2), "utf8");
+    return true;
+  } catch (err) {
+    console.error("Falha ao salvar data.json:", err);
     return false;
   }
 }
 
-const sessions=new Map();
+/*
+  ============================================================
+  SUPABASE
+  ============================================================
+*/
 
-function isUserOnline(uid){
-
-  for(
-    const [token,idv]
-    of sessions
-  ){
-
-    if(
-      idv===uid &&
-      [...wss.clients].some(
-        c=>
-          c.readyState===1 &&
-          c.token===token
-      )
-    ){
-
-      return true;
-    }
-  }
-
-  const u=db.users.find(
-    x=>x.id===uid
-  );
-
-  return !!(
-    u &&
-    u.lastSeen &&
-    Date.now()-u.lastSeen<60000
-  );
+function supabaseConfigured() {
+  return Boolean(SUPABASE_URL && SUPABASE_KEY);
 }
 
-function safe(u,self=false){
-
+function supabaseHeaders(extra = {}) {
   return {
-    id:u.id,
-    username:u.username,
-    name:u.name,
-    status:u.status,
-    photo:u.photo||'',
-    ...(self?{
-      chatBg:u.chatBg||''
-    }:{}),
-    lastSeen:
-      u.lastSeen||u.createdAt,
-    online:
-      isUserOnline(u.id),
-    createdAt:u.createdAt
+    apikey: SUPABASE_KEY,
+    Authorization: `Bearer ${SUPABASE_KEY}`,
+    "Content-Type": "application/json",
+    ...extra
   };
 }
 
-function touch(uid){
+async function supabaseRequest(pathname, options = {}) {
+  if (!supabaseConfigured()) {
+    throw new Error("SUPABASE_URL ou SUPABASE_SERVICE_ROLE_KEY não configurados.");
+  }
 
-  const u=db.users.find(
-    x=>x.id===uid
-  );
+  /*
+    IMPORTANTE:
+    Não montamos a URL concatenando query strings manualmente.
+    Isso evita o PGRST125 causado por URL/path inválido.
+  */
 
-  if(u){
+  const cleanPath = String(pathname || "")
+    .replace(/^\/+/, "");
 
-    u.lastSeen=Date.now();
-    save();
+  const url = new URL(`/rest/v1/${cleanPath}`, `${SUPABASE_URL}/`);
+
+  const response = await fetch(url.toString(), {
+    method: options.method || "GET",
+    headers: supabaseHeaders(options.headers || {}),
+    body: options.body
+  });
+
+  const text = await response.text();
+
+  let data = null;
+
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (_) {
+      data = text;
+    }
+  }
+
+  if (!response.ok) {
+    const error = new Error(
+      `Supabase ${response.status}: ${
+        typeof data === "string" ? data : JSON.stringify(data)
+      }`
+    );
+
+    error.status = response.status;
+    error.supabaseData = data;
+
+    throw error;
+  }
+
+  return data;
+}
+
+async function loadRemote() {
+  if (!supabaseConfigured()) {
+    return {
+      enabled: false,
+      found: false,
+      data: null,
+      error: new Error("Supabase não configurado.")
+    };
+  }
+
+  try {
+    const url = new URL("/rest/v1/linka_state", `${SUPABASE_URL}/`);
+
+    url.searchParams.set("id", "eq.1");
+    url.searchParams.set("select", "id,data,updated_at");
+    url.searchParams.set("limit", "1");
+
+    const result = await supabaseRequest(
+      url.pathname.replace(/^\/rest\/v1\//, "") + "?" + url.searchParams.toString()
+    );
+
+    if (!Array.isArray(result) || result.length === 0) {
+      return {
+        enabled: true,
+        found: false,
+        data: null,
+        error: null
+      };
+    }
+
+    return {
+      enabled: true,
+      found: true,
+      data: normalizeDB(result[0].data),
+      error: null
+    };
+  } catch (err) {
+    return {
+      enabled: true,
+      found: false,
+      data: null,
+      error: err
+    };
   }
 }
 
-function auth(req,res,next){
-
-  const t=(
-    req.headers.authorization||''
-  ).replace('Bearer ','');
-
-  let uid=
-    sessions.get(t)||
-    db.sessions[t];
-
-  if(uid){
-    sessions.set(t,uid);
+async function pushRemote() {
+  if (!supabaseConfigured()) {
+    throw new Error("Supabase não configurado.");
   }
 
-  if(!uid){
+  const url = new URL("/rest/v1/linka_state", `${SUPABASE_URL}/`);
 
-    return res
-      .status(401)
-      .json({
-        error:'Sessão expirada'
-      });
-  }
+  url.searchParams.set("on_conflict", "id");
 
-  req.user=db.users.find(
-    x=>x.id===uid
+  await supabaseRequest(
+    url.pathname.replace(/^\/rest\/v1\//, "") + "?" + url.searchParams.toString(),
+    {
+      method: "POST",
+      headers: {
+        Prefer: "resolution=merge-duplicates,return=minimal"
+      },
+      body: JSON.stringify([
+        {
+          id: 1,
+          data: db,
+          updated_at: new Date().toISOString()
+        }
+      ])
+    }
   );
 
-  if(!req.user){
+  return true;
+}
 
-    return res
-      .status(401)
-      .json({
-        error:'Usuário não encontrado'
-      });
+let saveTimer = null;
+let saveInProgress = false;
+
+async function persist() {
+  writeLocal();
+
+  if (!remoteReady || !remoteAvailable) {
+    return false;
   }
 
+  if (saveInProgress) {
+    return true;
+  }
+
+  saveInProgress = true;
+
+  try {
+    await pushRemote();
+    return true;
+  } catch (err) {
+    console.error("Falha ao salvar no Supabase:", err);
+    return false;
+  } finally {
+    saveInProgress = false;
+  }
+}
+
+function schedulePersist() {
+  writeLocal();
+
+  clearTimeout(saveTimer);
+
+  saveTimer = setTimeout(async () => {
+    await persist();
+  }, 300);
+}
+
+/*
+  ============================================================
+  SEGURANÇA / SENHAS
+  ============================================================
+*/
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
+  const hash = crypto
+    .pbkdf2Sync(String(password), salt, 120000, 64, "sha512")
+    .toString("hex");
+
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(password, stored) {
+  if (!stored || !String(stored).includes(":")) return false;
+
+  const parts = String(stored).split(":");
+
+  if (parts.length !== 2) return false;
+
+  const salt = parts[0];
+  const expected = parts[1];
+
+  const actual = crypto
+    .pbkdf2Sync(String(password), salt, 120000, 64, "sha512")
+    .toString("hex");
+
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(actual, "hex"),
+      Buffer.from(expected, "hex")
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+function makeId() {
+  return crypto.randomUUID();
+}
+
+function cleanText(value, max = 5000) {
+  return String(value ?? "").trim().slice(0, max);
+}
+
+function normalizeUsername(value) {
+  return cleanText(value, 40).toLowerCase();
+}
+
+function getToken(req) {
+  const auth = String(req.headers.authorization || "");
+
+  if (auth.toLowerCase().startsWith("bearer ")) {
+    return auth.slice(7).trim();
+  }
+
+  return cleanText(req.headers["x-session-token"], 300);
+}
+
+function getUserFromRequest(req) {
+  const token = getToken(req);
+
+  if (!token) return null;
+
+  const userId = sessions.get(token);
+
+  if (!userId) return null;
+
+  return db.users.find(u => u.id === userId) || null;
+}
+
+function publicUser(user) {
+  if (!user) return null;
+
+  return {
+    id: user.id,
+    username: user.username,
+    name: user.name || user.username,
+    avatar: user.avatar || "",
+    status: user.status || "",
+    createdAt: user.createdAt || null
+  };
+}
+
+function requireAuth(req, res, next) {
+  const user = getUserFromRequest(req);
+
+  if (!user) {
+    return res.status(401).json({
+      ok: false,
+      error: "Não autenticado."
+    });
+  }
+
+  req.user = user;
   next();
 }
 
-function pair(a,b){
-  return [a,b].sort().join(':');
-}
+/*
+  ============================================================
+  USUÁRIOS
+  ============================================================
+*/
 
-function sendUser(uid,msg){
+app.post("/api/register", async (req, res) => {
+  try {
+    const username = normalizeUsername(req.body.username);
+    const password = String(req.body.password || "");
+    const name = cleanText(req.body.name || username, 80);
 
-  for(
-    const [token,idv]
-    of sessions
-  ){
-
-    if(idv!==uid)continue;
-
-    for(
-      const c
-      of wss.clients
-    ){
-
-      if(
-        c.readyState===1 &&
-        c.token===token
-      ){
-
-        c.send(
-          JSON.stringify(msg)
-        );
-      }
+    if (username.length < 3) {
+      return res.status(400).json({
+        ok: false,
+        error: "O usuário precisa ter pelo menos 3 caracteres."
+      });
     }
-  }
-}
 
-async function pushUser(uid,payload){
-
-  const list=
-    db.pushSubscriptions[uid]||[];
-
-  if(!list.length)return;
-
-  const next=[];
-
-  for(
-    const sub
-    of list
-  ){
-
-    try{
-
-      await webpush.sendNotification(
-        sub,
-        JSON.stringify(payload),
-        {TTL:60}
-      );
-
-      next.push(sub);
-
-    }catch(e){
-
-      if(
-        e.statusCode!==404 &&
-        e.statusCode!==410
-      ){
-        next.push(sub);
-      }
+    if (password.length < 4) {
+      return res.status(400).json({
+        ok: false,
+        error: "A senha precisa ter pelo menos 4 caracteres."
+      });
     }
-  }
 
-  if(
-    next.length!==list.length
-  ){
-
-    db.pushSubscriptions[uid]=next;
-    save();
-  }
-}
-
-/* REGISTRO */
-
-app.post(
-  '/api/register',
-  (req,res)=>{
-
-    let {
-      name,
-      username,
-      password
-    }=req.body||{};
-
-    name=String(name||'').trim();
-
-    username=String(
-      username||''
-    )
-    .trim()
-    .toLowerCase()
-    .replace(/^@/,'');
-
-    password=String(
-      password||''
+    const exists = db.users.some(
+      u => normalizeUsername(u.username) === username
     );
 
-    if(
-      name.length<2 ||
-      username.length<3 ||
-      password.length<6
-    ){
-
-      return res
-        .status(400)
-        .json({
-          error:
-          'Use nome, usuário com pelo menos 3 caracteres e senha com 6 caracteres.'
-        });
+    if (exists) {
+      return res.status(409).json({
+        ok: false,
+        error: "Esse usuário já existe."
+      });
     }
 
-    if(
-      !/^[a-z0-9._-]+$/.test(username)
-    ){
-
-      return res
-        .status(400)
-        .json({
-          error:
-          'Usuário: apenas letras, números, ponto, _ ou -.'
-        });
-    }
-
-    if(
-      db.users.some(
-        u=>u.username===username
-      )
-    ){
-
-      return res
-        .status(409)
-        .json({
-          error:
-          'Esse usuário já existe.'
-        });
-    }
-
-    const x=hash(password);
-
-    const u={
-      id:id(),
-      name,
+    const user = {
+      id: makeId(),
       username,
-      status:'Disponível',
-      photo:'',
-      s:x.s,
-      h:x.h,
-      createdAt:Date.now()
+      name,
+      password: hashPassword(password),
+      avatar: "",
+      status: "",
+      createdAt: new Date().toISOString()
     };
 
-    db.users.push(u);
-    db.contacts[u.id]=[];
+    db.users.push(user);
 
-    save();
-
-    const token=id();
-
-    sessions.set(
-      token,
-      u.id
-    );
-
-    db.sessions[token]=u.id;
-
-    save();
-
-    res.json({
-      token,
-      user:safe(u,true)
-    });
-
-  }
-);
-
-/* LOGIN */
-
-app.post(
-  '/api/login',
-  (req,res)=>{
-
-    const username=String(
-      req.body?.username||''
-    )
-    .trim()
-    .toLowerCase()
-    .replace(/^@/,'');
-
-    const password=String(
-      req.body?.password||''
-    );
-
-    const u=db.users.find(
-      x=>x.username===username
-    );
-
-    if(
-      !u ||
-      !check(password,u)
-    ){
-
-      return res
-        .status(401)
-        .json({
-          error:
-          'Usuário ou senha inválidos.'
-        });
+    if (!db.contacts[user.id]) db.contacts[user.id] = [];
+    if (!db.messages[user.id]) db.messages[user.id] = [];
+    if (!db.pushSubscriptions[user.id]) {
+      db.pushSubscriptions[user.id] = [];
     }
 
-    const token=id();
+    schedulePersist();
 
-    sessions.set(
+    const token = makeId();
+    sessions.set(token, user.id);
+
+    res.json({
+      ok: true,
       token,
-      u.id
+      user: publicUser(user)
+    });
+  } catch (err) {
+    console.error("Erro no registro:", err);
+
+    res.status(500).json({
+      ok: false,
+      error: "Erro interno ao criar conta."
+    });
+  }
+});
+
+app.post("/api/login", async (req, res) => {
+  try {
+    const username = normalizeUsername(req.body.username);
+    const password = String(req.body.password || "");
+
+    const user = db.users.find(
+      u => normalizeUsername(u.username) === username
     );
 
-    db.sessions[token]=u.id;
+    if (!user || !verifyPassword(password, user.password)) {
+      return res.status(401).json({
+        ok: false,
+        error: "Usuário ou senha incorretos."
+      });
+    }
 
-    save();
+    const token = makeId();
+    sessions.set(token, user.id);
 
     res.json({
+      ok: true,
       token,
-      user:safe(u,true)
+      user: publicUser(user)
     });
+  } catch (err) {
+    console.error("Erro no login:", err);
 
+    res.status(500).json({
+      ok: false,
+      error: "Erro interno ao entrar."
+    });
   }
-);
+});
 
-/* LOGOUT */
+app.post("/api/logout", requireAuth, (req, res) => {
+  const token = getToken(req);
 
-app.post(
-  '/api/logout',
-  auth,
-  (req,res)=>{
+  if (token) sessions.delete(token);
 
-    touch(req.user.id);
+  res.json({
+    ok: true
+  });
+});
 
-    for(
-      const [t,u]
-      of sessions
-    ){
+app.get("/api/me", requireAuth, (req, res) => {
+  res.json({
+    ok: true,
+    user: publicUser(req.user)
+  });
+});
 
-      if(u===req.user.id){
+app.get("/api/ping", (req, res) => {
+  res.json({
+    ok: true,
+    online: true,
+    time: new Date().toISOString()
+  });
+});
 
-        sessions.delete(t);
-        delete db.sessions[t];
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    online: true,
+    supabaseConfigured: supabaseConfigured(),
+    supabaseConnected: remoteAvailable,
+    time: new Date().toISOString()
+  });
+});
 
-      }
+/*
+  ============================================================
+  PERFIL
+  ============================================================
+*/
+
+app.put("/api/profile", requireAuth, async (req, res) => {
+  try {
+    const name = cleanText(req.body.name, 80);
+    const status = cleanText(req.body.status, 160);
+    const avatar = cleanText(req.body.avatar, 500000);
+
+    if (name) req.user.name = name;
+
+    req.user.status = status;
+
+    if (req.body.avatar !== undefined) {
+      req.user.avatar = avatar;
     }
 
-    for(
-      const t
-      of Object.keys(db.sessions)
-    ){
-
-      if(
-        db.sessions[t]===req.user.id
-      ){
-
-        delete db.sessions[t];
-      }
-    }
-
-    save();
+    schedulePersist();
 
     res.json({
-      ok:true
+      ok: true,
+      user: publicUser(req.user)
     });
+  } catch (err) {
+    console.error("Erro ao atualizar perfil:", err);
 
-  }
-);
-
-/* PING */
-
-app.post(
-  '/api/ping',
-  auth,
-  (req,res)=>{
-
-    touch(req.user.id);
-
-    res.json({
-      ok:true,
-      lastSeen:req.user.lastSeen
+    res.status(500).json({
+      ok: false,
+      error: "Não foi possível atualizar o perfil."
     });
-
   }
-);
+});
 
-/* ME */
+app.post("/api/profile", requireAuth, async (req, res) => {
+  return app._router.handle(
+    {
+      ...req,
+      method: "PUT",
+      url: "/api/profile"
+    },
+    res,
+    () => {}
+  );
+});
 
-app.get(
-  '/api/me',
-  auth,
-  (req,res)=>
-    res.json({
-      user:safe(req.user,true)
+/*
+  ============================================================
+  BUSCA DE USUÁRIOS
+  ============================================================
+*/
+
+app.get("/api/users/search", requireAuth, (req, res) => {
+  const q = cleanText(req.query.q, 100).toLowerCase();
+
+  if (!q) {
+    return res.json({
+      ok: true,
+      users: []
+    });
+  }
+
+  const users = db.users
+    .filter(u => u.id !== req.user.id)
+    .filter(u => {
+      const username = String(u.username || "").toLowerCase();
+      const name = String(u.name || "").toLowerCase();
+
+      return username.includes(q) || name.includes(q);
     })
-);
+    .slice(0, 30)
+    .map(publicUser);
 
-/* EDITAR PERFIL */
+  res.json({
+    ok: true,
+    users
+  });
+});
 
-app.put(
-  '/api/me',
-  auth,
-  (req,res)=>{
+app.get("/api/search", requireAuth, (req, res) => {
+  const q = cleanText(req.query.q, 100).toLowerCase();
 
-    const {
-      name,
-      status,
-      photo,
-      chatBg
-    }=req.body||{};
-
-    if(
-      typeof name==='string' &&
-      name.trim()
-    ){
-
-      req.user.name=
-        name.trim().slice(0,40);
-    }
-
-    if(
-      typeof status==='string'
-    ){
-
-      req.user.status=
-        status.trim().slice(0,100);
-    }
-
-    if(
-      typeof photo==='string' &&
-      photo.length<1500000
-    ){
-
-      req.user.photo=photo;
-    }
-
-    if(
-      typeof chatBg==='string' &&
-      chatBg.length<1500000
-    ){
-
-      req.user.chatBg=chatBg;
-    }
-
-    save();
-
-    res.json({
-      user:safe(req.user,true)
+  if (!q) {
+    return res.json({
+      ok: true,
+      users: []
     });
-
-  }
-);
-/* BUSCAR USUÁRIOS */
-
-app.get(
-  '/api/users',
-  auth,
-  (req,res)=>{
-
-    const q=String(
-      req.query.q||''
-    )
-    .trim()
-    .toLowerCase()
-    .replace(/^@/,'');
-
-    if(q.length<2)
-      return res.json([]);
-
-    res.json(
-      db.users
-        .filter(
-          u=>
-            u.id!==req.user.id &&
-            (
-              u.username.includes(q) ||
-              u.name.toLowerCase().includes(q)
-            )
-        )
-        .slice(0,20)
-        .map(safe)
-    );
-
-  }
-);
-
-/* CONTATOS */
-
-app.get(
-  '/api/contacts',
-  auth,
-  (req,res)=>{
-
-    const ids=
-      db.contacts[req.user.id]||[];
-
-    res.json(
-      ids
-        .map(
-          i=>db.users.find(
-            u=>u.id===i
-          )
-        )
-        .filter(Boolean)
-        .map(safe)
-    );
-
-  }
-);
-
-app.get(
-  '/api/users/:id',
-  auth,
-  (req,res)=>{
-
-    const u=db.users.find(
-      x=>x.id===req.params.id
-    );
-
-    if(!u){
-
-      return res
-        .status(404)
-        .json({
-          error:
-          'Usuário não encontrado.'
-        });
-    }
-
-    res.json(safe(u));
-
-  }
-);
-
-app.post(
-  '/api/contacts/:id',
-  auth,
-  (req,res)=>{
-
-    const other=db.users.find(
-      u=>u.id===req.params.id
-    );
-
-    if(
-      !other ||
-      other.id===req.user.id
-    ){
-
-      return res
-        .status(404)
-        .json({
-          error:
-          'Usuário não encontrado.'
-        });
-    }
-
-    db.contacts[req.user.id]??=[];
-
-    if(
-      !db.contacts[req.user.id]
-        .includes(other.id)
-    ){
-
-      db.contacts[
-        req.user.id
-      ].push(other.id);
-    }
-
-    save();
-
-    sendUser(
-      other.id,
-      {
-        type:'contact_added',
-        by:safe(req.user)
-      }
-    );
-
-    res.json({
-      user:safe(other)
-    });
-
-  }
-);
-
-app.delete(
-  '/api/contacts/:id',
-  auth,
-  (req,res)=>{
-
-    db.contacts[req.user.id]=(
-      db.contacts[req.user.id]||[]
-    ).filter(
-      x=>x!==req.params.id
-    );
-
-    save();
-
-    res.json({
-      ok:true
-    });
-
-  }
-);
-
-/* NOTIFICAÇÕES */
-
-app.get(
-  '/api/push/vapid-public-key',
-  auth,
-  (req,res)=>{
-
-    res.json({
-      publicKey:
-        process.env.VAPID_PUBLIC_KEY||
-        db.pushKeys?.publicKey||
-        ''
-    });
-
-  }
-);
-
-app.post(
-  '/api/push/subscribe',
-  auth,
-  (req,res)=>{
-
-    const sub=
-      req.body?.subscription;
-
-    if(
-      !sub ||
-      !sub.endpoint ||
-      !sub.keys?.p256dh ||
-      !sub.keys?.auth
-    ){
-
-      return res
-        .status(400)
-        .json({
-          error:
-          'Assinatura de notificação inválida.'
-        });
-    }
-
-    db.pushSubscriptions[
-      req.user.id
-    ]??=[];
-
-    const list=
-      db.pushSubscriptions[
-        req.user.id
-      ];
-
-    if(
-      !list.some(
-        x=>x.endpoint===sub.endpoint
-      )
-    ){
-
-      list.push(sub);
-    }
-
-    db.pushSubscriptions[
-      req.user.id
-    ]=list.slice(-5);
-
-    save();
-
-    res.json({
-      ok:true
-    });
-
-  }
-);
-
-app.delete(
-  '/api/push/subscribe',
-  auth,
-  (req,res)=>{
-
-    const endpoint=
-      String(
-        req.body?.endpoint||''
-      );
-
-    if(endpoint){
-
-      db.pushSubscriptions[
-        req.user.id
-      ]=(
-        db.pushSubscriptions[
-          req.user.id
-        ]||[]
-      ).filter(
-        x=>x.endpoint!==endpoint
-      );
-    }
-
-    save();
-
-    res.json({
-      ok:true
-    });
-
-  }
-);
-
-/* MENSAGENS */
-
-app.get(
-  '/api/messages/:id',
-  auth,
-  (req,res)=>{
-
-    const other=req.params.id;
-
-    if(
-      !db.users.some(
-        u=>u.id===other
-      )
-    ){
-
-      return res
-        .status(404)
-        .json({
-          error:
-          'Usuário não encontrado.'
-        });
-    }
-
-    res.json(
-      db.messages[
-        pair(req.user.id,other)
-      ]||[]
-    );
-
-  }
-);
-
-app.post(
-  '/api/messages/:id',
-  auth,
-  (req,res)=>{
-
-    const other=req.params.id;
-
-    const u=db.users.find(
-      x=>x.id===other
-    );
-
-    if(!u){
-
-      return res
-        .status(404)
-        .json({
-          error:
-          'Usuário não encontrado.'
-        });
-    }
-
-    let m;
-
-    if(
-      req.body?.type==='audio'
-    ){
-
-      const audio=String(
-        req.body?.audio||''
-      );
-
-      if(
-        !/^data:audio\/[A-Za-z0-9.+-]+(?:;[^,]*)?;base64,[A-Za-z0-9+/=]+$/.test(audio) ||
-        audio.length>10*1024*1024
-      ){
-
-        return res
-          .status(400)
-          .json({
-            error:
-            'Áudio inválido ou muito grande.'
-          });
-      }
-
-      m={
-        id:id(),
-        from:req.user.id,
-        to:other,
-        type:'audio',
-        audio,
-        createdAt:Date.now()
-      };
-
-    }else{
-
-      const text=String(
-        req.body?.text||''
-      ).trim();
-
-      if(
-        !text ||
-        text.length>4000
-      ){
-
-        return res
-          .status(400)
-          .json({
-            error:
-            'Mensagem inválida.'
-          });
-      }
-
-      m={
-        id:id(),
-        from:req.user.id,
-        to:other,
-        type:'text',
-        text,
-        createdAt:Date.now()
-      };
-    }
-
-    const k=pair(
-      req.user.id,
-      other
-    );
-
-    db.messages[k]??=[];
-
-    db.messages[k].push(m);
-
-    db.messages[k]=
-      db.messages[k].slice(-500);
-
-    save();
-
-    sendUser(
-      other,
-      {
-        type:'message',
-        message:m
-      }
-    );
-
-    const preview=
-      m.type==='audio'
-        ?'Áudio recebido'
-        :m.text;
-
-    pushUser(
-      other,
-      {
-        title:
-          req.user.name||
-          'Nova mensagem',
-        body:preview,
-        icon:'/icon-192.png',
-        badge:'/icon-192.png',
-        data:{
-          chatId:req.user.id
-        }
-      }
-    ).catch(()=>{});
-
-    res.json(m);
-
-  }
-);
-
-/* WEBSOCKET */
-
-wss.on(
-  'connection',
-  (ws,req)=>{
-
-    const token=
-      new URL(
-        req.url,
-        'http://localhost'
-      )
-      .searchParams
-      .get('token');
-
-    const uid=
-      sessions.get(token)||
-      db.sessions[token];
-
-    if(uid){
-      sessions.set(token,uid);
-    }
-
-    if(!uid){
-
-      ws.close();
-      return;
-    }
-
-    ws.token=token;
-
-    touch(uid);
-
-    ws.on(
-      'message',
-      buf=>{
-
-        try{
-
-          const d=
-            JSON.parse(buf);
-
-          if(
-            d.type==='ping'
-          ){
-
-            touch(uid);
-          }
-
-          if(
-            d.type==='typing' &&
-            d.to
-          ){
-
-            sendUser(
-              d.to,
-              {
-                type:'typing',
-                from:uid,
-                active:!!d.active
-              }
-            );
-          }
-
-        }catch{}
-
-      }
-    );
-
-    ws.on(
-      'close',
-      ()=>{
-
-        touch(uid);
-
-        sendUser(
-          uid,
-          {
-            type:'presence',
-            id:uid
-          }
-        );
-
-      }
-    );
-
-    sendUser(
-      uid,
-      {
-        type:'presence',
-        id:uid
-      }
-    );
-
-  }
-);
-
-/* INICIALIZAÇÃO */
-
-async function boot(){
-
-  const remote=
-    await loadRemote();
-
-  /*
-    SEGURANÇA:
-    Se o Supabase responder com erro,
-    o servidor NÃO usa o banco local
-    para sobrescrever os dados remotos.
-  */
-
-  if(
-    remote.enabled &&
-    remote.error
-  ){
-
-    console.error(
-      'Linka: NÃO foi possível acessar o Supabase.'
-    );
-
-    console.error(
-      'Linka: o servidor NÃO vai sobrescrever os dados remotos.'
-    );
-
-    process.exit(1);
   }
 
-  if(
-    remote.enabled &&
-    remote.found
-  ){
+  const users = db.users
+    .filter(u => u.id !== req.user.id)
+    .filter(u => {
+      const username = String(u.username || "").toLowerCase();
+      const name = String(u.name || "").toLowerCase();
 
-    normalizeDB(
-      remote.data
-    );
+      return username.includes(q) || name.includes(q);
+    })
+    .slice(0, 30)
+    .map(publicUser);
 
-    console.log(
-      'Linka: dados carregados do Supabase.'
-    );
+  res.json({
+    ok: true,
+    users
+  });
+});
 
-  }else{
+/*
+  ============================================================
+  CONTATOS
+  ============================================================
+*/
 
-    normalizeDB(
-      readLocal()||db
-    );
-
-    if(REMOTE_ENABLED){
-
-      console.log(
-        'Linka: nenhuma base remota encontrada. Criando o primeiro backup no Supabase.'
-      );
-    }
+function ensureContacts(userId) {
+  if (!Array.isArray(db.contacts[userId])) {
+    db.contacts[userId] = [];
   }
 
-  if(!db.pushKeys){
-
-    db.pushKeys=
-      webpush.generateVAPIDKeys();
-
-    save();
-  }
-
-  webpush.setVapidDetails(
-    process.env.VAPID_SUBJECT||
-      'mailto:linka@localhost',
-
-    process.env.VAPID_PUBLIC_KEY||
-      db.pushKeys.publicKey,
-
-    process.env.VAPID_PRIVATE_KEY||
-      db.pushKeys.privateKey
-  );
-
-  if(REMOTE_ENABLED){
-
-    await pushRemote(
-      JSON.parse(
-        JSON.stringify(db)
-      )
-    );
-
-    console.log(
-      'Linka: persistência Supabase ativada.'
-    );
-
-  }else{
-
-    console.warn(
-      'ATENÇÃO: SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY não configurados.'
-    );
-  }
-
-  server.listen(
-    PORT,
-    ()=>{
-      console.log(
-        'Linka rodando na porta '+PORT
-      );
-    }
-  );
+  return db.contacts[userId];
 }
 
-boot().catch(
-  e=>{
-    console.error(
-      'Falha ao iniciar o Linka:',
-      e
+app.get("/api/contacts", requireAuth, (req, res) => {
+  const ids = ensureContacts(req.user.id);
+
+  const contacts = ids
+    .map(id => db.users.find(u => u.id === id))
+    .filter(Boolean)
+    .map(publicUser);
+
+  res.json({
+    ok: true,
+    contacts
+  });
+});
+
+app.post("/api/contacts", requireAuth, async (req, res) => {
+  const targetId = cleanText(req.body.userId || req.body.contactId, 100);
+
+  const target = db.users.find(u => u.id === targetId);
+
+  if (!target) {
+    return res.status(404).json({
+      ok: false,
+      error: "Usuário não encontrado."
+    });
+  }
+
+  if (target.id === req.user.id) {
+    return res.status(400).json({
+      ok: false,
+      error: "Você não pode adicionar você mesmo."
+    });
+  }
+
+  const contacts = ensureContacts(req.user.id);
+
+  if (!contacts.includes(target.id)) {
+    contacts.push(target.id);
+  }
+
+  schedulePersist();
+
+  res.json({
+    ok: true,
+    contact: publicUser(target)
+  });
+});
+
+app.delete("/api/contacts/:id", requireAuth, async (req, res) => {
+  const contacts = ensureContacts(req.user.id);
+
+  db.contacts[req.user.id] = contacts.filter(
+    id => id !== req.params.id
+  );
+
+  schedulePersist();
+
+  res.json({
+    ok: true
+  });
+});
+
+/*
+  ============================================================
+  MENSAGENS
+  ============================================================
+*/
+
+function conversationKey(a, b) {
+  return [a, b].sort().join("__");
+}
+
+function ensureConversation(a, b) {
+  const key = conversationKey(a, b);
+
+  if (!Array.isArray(db.messages[key])) {
+    db.messages[key] = [];
+  }
+
+  return {
+    key,
+    list: db.messages[key]
+  };
+}
+
+app.get("/api/messages/:userId", requireAuth, (req, res) => {
+  const otherId = cleanText(req.params.userId, 100);
+
+  const other = db.users.find(u => u.id === otherId);
+
+  if (!other) {
+    return res.status(404).json({
+      ok: false,
+      error: "Usuário não encontrado."
+    });
+  }
+
+  const conversation = ensureConversation(req.user.id, otherId);
+
+  res.json({
+    ok: true,
+    messages: conversation.list
+  });
+});
+
+app.get("/api/messages", requireAuth, (req, res) => {
+  const otherId = cleanText(
+    req.query.userId || req.query.to || req.query.contactId,
+    100
+  );
+
+  if (!otherId) {
+    return res.status(400).json({
+      ok: false,
+      error: "Usuário da conversa não informado."
+    });
+  }
+
+  const conversation = ensureConversation(req.user.id, otherId);
+
+  res.json({
+    ok: true,
+    messages: conversation.list
+  });
+});
+
+async function sendMessage(req, res) {
+  try {
+    const to = cleanText(
+      req.body.to ||
+      req.body.userId ||
+      req.body.receiverId ||
+      req.body.contactId,
+      100
     );
 
-    process.exit(1);
+    const text = cleanText(
+      req.body.text !== undefined
+        ? req.body.text
+        : req.body.message,
+      5000
+    );
+
+    if (!to || !text) {
+      return res.status(400).json({
+        ok: false,
+        error: "Destinatário e mensagem são obrigatórios."
+      });
+    }
+
+    const receiver = db.users.find(u => u.id === to);
+
+    if (!receiver) {
+      return res.status(404).json({
+        ok: false,
+        error: "Destinatário não encontrado."
+      });
+    }
+
+    const conversation = ensureConversation(req.user.id, receiver.id);
+
+    const message = {
+      id: makeId(),
+      from: req.user.id,
+      to: receiver.id,
+      text,
+      createdAt: new Date().toISOString()
+    };
+
+    conversation.list.push(message);
+
+    schedulePersist();
+
+    sendToUser(receiver.id, {
+      type: "message",
+      message
+    });
+
+    await pushUser(receiver.id, {
+      title: req.user.name || req.user.username,
+      body: text,
+      data: {
+        type: "message",
+        from: req.user.id
+      }
+    });
+
+    res.json({
+      ok: true,
+      message
+    });
+  } catch (err) {
+    console.error("Erro ao enviar mensagem:", err);
+
+    res.status(500).json({
+      ok: false,
+      error: "Não foi possível enviar a mensagem."
+    });
   }
-);
+}
+
+app.post("/api/messages", requireAuth, sendMessage);
+app.post("/api/message", requireAuth, sendMessage);
+
+/*
+  ============================================================
+  WEBSOCKET
+  ============================================================
+*/
+
+function sendSocket(socket, data) {
+  try {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(data));
+    }
+  } catch (err) {
+    console.error("Erro ao enviar WebSocket:", err);
+  }
+}
+
+function sendToUser(userId, data) {
+  const userSockets = sockets.get(userId);
+
+  if (!userSockets) return;
+
+  for (const socket of userSockets) {
+    sendSocket(socket, data);
+  }
+}
+
+function addSocket(userId, socket) {
+  if (!sockets.has(userId)) {
+    sockets.set(userId, new Set());
+  }
+
+  sockets.get(userId).add(socket);
+}
+
+function removeSocket(userId, socket) {
+  const set = sockets.get(userId);
+
+  if (!set) return;
+
+  set.delete(socket);
+
+  if (set.size === 0) {
+    sockets.delete(userId);
+  }
+}
+
+wss.on("connection", (socket, req) => {
+  let userId = null;
+
+  try {
+    const requestUrl = new URL(
+      req.url || "/",
+      `http://${req.headers.host || "localhost"}`
+    );
+
+    const token = requestUrl.searchParams.get("token");
+
+    if (token) {
+      userId = sessions.get(token) || null;
+    }
+  } catch (_) {}
+
+  if (!userId) {
+    sendSocket(socket, {
+      type: "error",
+      error: "Não autenticado."
+    });
+
+    socket.close();
+    return;
+  }
+
+  addSocket(userId, socket);
+
+  sendSocket(socket, {
+    type: "connected",
+    ok: true
+  });
+
+  socket.on("message", raw => {
+    try {
+      const data = JSON.parse(String(raw));
+
+      if (data.type === "ping") {
+        sendSocket(socket, {
+          type: "pong",
+          time: Date.now()
+        });
+      }
+    } catch (_) {}
+  });
+
+  socket.on("close", () => {
+    removeSocket(userId, socket);
+  });
+
+  socket.on("error", () => {
+    removeSocket(userId, socket);
+  });
+});
+
+/*
+  ============================================================
+  WEB PUSH
+  ============================================================
+*/
+
+function setupWebPush() {
+  if (!webpush) return false;
+
+  const publicKey = process.env.VAPID_PUBLIC_KEY;
+  const privateKey = process.env.VAPID_PRIVATE_KEY;
+  const email = process.env.VAPID_EMAIL || "mailto:admin@example.com";
+
+  if (!publicKey || !privateKey) return false;
+
+  try {
+    web

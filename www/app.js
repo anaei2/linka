@@ -9,6 +9,15 @@ function hideBoot(){const b=document.querySelector('#boot');if(!b)return;b.class
 const api=async(path,opt={})=>{opt.headers={...(opt.headers||{}),...(A.token?{Authorization:'Bearer '+A.token}:{})};if(opt.body&&typeof opt.body!=='string'){opt.headers['Content-Type']='application/json';opt.body=JSON.stringify(opt.body)}const r=await fetch(path,opt);let d={};try{d=await r.json()}catch{}if(!r.ok)throw Error(d.error||'Erro');return d};
 function av(x,big=false){return `<div class="avatar ${big?'big':''}">${x?.photo?`<img src="${x.photo}">`:esc((x?.name||'?')[0].toUpperCase())}</div>`}
 function toast(t){const x=document.createElement('div');x.className='toast';x.textContent=t;document.body.appendChild(x);setTimeout(()=>x.remove(),2200)}
+function inAppNotify(title,body,action){
+  let box=document.querySelector('#inAppNotifs');
+  if(!box){box=document.createElement('div');box.id='inAppNotifs';box.className='inAppNotifs';document.body.appendChild(box)}
+  const n=document.createElement('button');n.type='button';n.className='inAppNotif';
+  n.innerHTML=`<div class=\"inAppNotifTitle\">${esc(title)}</div><div class=\"inAppNotifBody\">${esc(body)}</div>`;
+  if(action)n.onclick=()=>{n.remove();action()};
+  box.appendChild(n);
+  setTimeout(()=>n.remove(),4200);
+}
 function lastSeenText(c){const t=Number(c?.lastSeen||0);if(!t)return 'offline';const d=new Date(t),now=new Date();const time=d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});const startToday=new Date(now.getFullYear(),now.getMonth(),now.getDate());const startYesterday=new Date(startToday.getTime()-86400000);if(d>=startToday)return 'visto por último hoje às '+time;if(d>=startYesterday)return 'visto por último ontem às '+time;return 'visto por último em '+d.toLocaleDateString('pt-BR')+' às '+time}
 function presenceText(c){if(c?.online)return 'online';return lastSeenText(c)}
 function applyChatBg(){const box=$('#msgs');if(!box)return;const bg=A.user?.chatBg||'';box.style.background=bg&&bg.startsWith('data:')?`url(${bg}) center/cover fixed, radial-gradient(circle at top,#14232a,#0b141a 60%)`:bg==='gradient'?'linear-gradient(135deg,#081b22,#162a31)':bg==='dots'?'radial-gradient(circle at 20px 20px,#ffffff18 2px,transparent 3px) 0 0/32px 32px,#0b141a':'radial-gradient(circle at top,#14232a,#0b141a 60%)'}
@@ -28,6 +37,7 @@ async function start(){
       render();
       hideBoot();
       initNotifications();
+      armNotificationActivation();
       connect();
       if('Notification' in window && Notification.permission!=='granted'){setTimeout(()=>{if(A.token&&document.visibilityState==='visible')toast('Ative as notificações no Menu para receber mensagens mesmo fora do Linka.')},1200)}
       const chat=new URLSearchParams(location.search).get('chat');
@@ -86,49 +96,61 @@ async function notificationsModal(){await loadNotifications();const escN=s=>esc(
 function updateNotifBell(){const b=$('#notifBell');if(!b)return;const n=unreadCount();b.innerHTML='🔔'+(n?`<span class="notifbadge">${n>99?'99+':n}</span>`:'');b.setAttribute('aria-label',n?`${n} notificações não lidas`:'Notificações')}
 function menuModal(){modal(`<h2>Menu</h2><button class="menurow" id="newc">＋ Adicionar contato</button><button class="menurow" id="prof">Perfil</button><button class="menurow" id="notif">Notificações</button><button class="menurow" id="activateNotifMenu">Ativar notificações</button><button class="menurow" id="bg">Fundo das conversas</button><button class="menurow" id="logout">Sair</button><button class="danger" data-close>Fechar</button>`);$('#newc').onclick=addContactModal;$('#prof').onclick=profileModal;$('#notif').onclick=notificationsModal;$('#activateNotifMenu').onclick=async()=>{await setupNotifications();};$('#bg').onclick=backgroundModal;$('#logout').onclick=async()=>{try{await api('/api/logout',{method:'POST'})}catch{}localStorage.removeItem('ac_token');sessionStorage.removeItem('ac_token');location.reload()}}
 function backgroundModal(){modal(`<h2>Fundo das conversas</h2><p class="muted">Escolha o fundo que aparecerá nas mensagens.</p><div class="bggrid"><button class="bgpick" data-bg="">Padrão</button><button class="bgpick" data-bg="gradient">Escuro</button><button class="bgpick" data-bg="dots">Pontos</button></div><label>Ou escolha uma imagem<input id="bgfile" type="file" accept="image/*"></label><button class="primary" id="savebg">Salvar fundo</button><button class="danger" data-close>Cancelar</button>`);let chosen=A.user.chatBg||'';document.querySelectorAll('.bgpick').forEach(b=>b.onclick=()=>chosen=b.dataset.bg);$('#bgfile').onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>chosen=r.result;r.readAsDataURL(f)};$('#savebg').onclick=async()=>{try{A.user=(await api('/api/me',{method:'PUT',body:{chatBg:chosen}})).user;$('#modal').innerHTML='';applyChatBg();toast('Fundo salvo')}catch(e){toast(e.message)}}}
-async function setupNotifications(){
-  if(!('Notification' in window)){toast('Este dispositivo não suporta notificações web');return}
+async function setupNotifications(opts={}){
+  if(!('Notification' in window)){toast('Este dispositivo não suporta notificações');return false}
   try{
-    const permission=await Notification.requestPermission();
-    if(permission==='denied'){toast('Notificações estão bloqueadas. Permita-as nas configurações do site.');return}
-    if(permission!=='granted'){toast('Notificações não autorizadas');return}
-    if(!('serviceWorker' in navigator)){toast('Seu navegador não suporta notificações FCM');return}
+    let permission=Notification.permission;
+    if(permission==='default' && !opts.noPrompt){ permission=await Notification.requestPermission(); }
+    if(permission!=='granted'){ if(permission==='denied')toast('Ative as notificações nas configurações do site.'); return false; }
+    if(!('serviceWorker' in navigator)){toast('Seu navegador não suporta notificações em segundo plano');return false}
     const cfg=await api('/api/firebase-config');
-    if(!window.firebase){toast('Firebase não carregou');return}
+    if(!window.firebase){toast('Firebase não carregou');return false}
     if(!firebase.apps.length)firebase.initializeApp(cfg);
     const messaging=firebase.messaging();
-    const reg=await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+    const reg=await navigator.serviceWorker.register('/firebase-messaging-sw.js',{scope:'/'});
     await navigator.serviceWorker.ready;
     const token=await messaging.getToken({vapidKey:cfg.vapidKey,serviceWorkerRegistration:reg});
     if(!token)throw new Error('Token FCM não foi gerado');
-    await api('/api/fcm/token',{method:'POST',body:{token}});
-    window.__linkaFcmToken=token;
-    toast('Notificações ativadas');
-  }catch(e){console.error('FCM:',e);toast('Não foi possível ativar notificações')}
+    if(token!==window.__linkaFcmToken){
+      await api('/api/fcm/token',{method:'POST',body:{token}});
+      window.__linkaFcmToken=token;
+    }
+    if(!window.__linkaFcmBound){
+      window.__linkaFcmBound=true;
+      messaging.onMessage(payload=>{
+        const n=payload.notification||{}; const data=payload.data||{};
+        const title=n.title||'Linka'; const body=n.body||'Nova notificação';
+        if(document.visibilityState==='visible') toast(title+': '+body);
+        loadNotifications().then(updateNotifBell).catch(()=>{});
+      });
+      if(typeof messaging.onTokenRefresh==='function') messaging.onTokenRefresh(async()=>{
+        try{const t=await messaging.getToken({vapidKey:cfg.vapidKey,serviceWorkerRegistration:reg});if(t&&t!==window.__linkaFcmToken){await api('/api/fcm/token',{method:'POST',body:{token:t}});window.__linkaFcmToken=t}}catch(e){console.warn('FCM token refresh:',e)}});
+    }
+    window.__linkaNotificationsReady=true;
+    return true;
+  }catch(e){console.error('FCM:',e); if(!opts.silent)toast('Não foi possível ativar as notificações'); return false}
 }
+
 async function initNotifications(){
   try{
-    if(!('serviceWorker' in navigator)||!window.firebase)return;
-    const permission=Notification.permission;
-    if(permission!=='granted')return;
-    const cfg=await api('/api/firebase-config');
-    if(!firebase.apps.length)firebase.initializeApp(cfg);
-    const messaging=firebase.messaging();
-    const reg=await navigator.serviceWorker.register('/firebase-messaging-sw.js');
-    await navigator.serviceWorker.ready;
-    const token=await messaging.getToken({vapidKey:cfg.vapidKey,serviceWorkerRegistration:reg});
-    if(token){window.__linkaFcmToken=token;await api('/api/fcm/token',{method:'POST',body:{token}})}
-    messaging.onMessage(payload=>{
-      const n=payload.notification||{};
-      const data=payload.data||{};
-      const title=n.title||'Linka';
-      const body=n.body||'Nova notificação';
-      if(data.type==='call' && document.visibilityState==='visible')toast(body);
-      if(document.visibilityState!=='visible')try{new Notification(title,{body,icon:'/icon-192.png',tag:data.type==='call'?'linka-call-'+(data.callId||''):(data.chatId?'linka-'+data.chatId:'linka')})}catch{}
-      if(data.chatId){toast(title+': '+body)}else toast(body);
-      loadNotifications().then(updateNotifBell).catch(()=>{});
-    });
+    if(!('serviceWorker' in navigator)||!window.firebase||!('Notification' in window))return;
+    if(Notification.permission==='granted') await setupNotifications({noPrompt:true,silent:true});
   }catch(e){console.warn('FCM:',e)}
+}
+
+function armNotificationActivation(){
+  if(window.__linkaNotifActivationArmed || !('Notification' in window))return;
+  window.__linkaNotifActivationArmed=true;
+  const activate=()=>{
+    if(window.__linkaNotifActivationDone)return;
+    if(Notification.permission==='granted'){window.__linkaNotifActivationDone=true;setupNotifications({noPrompt:true,silent:true});return}
+    if(Notification.permission==='default'){
+      window.__linkaNotifActivationDone=true;
+      setupNotifications({silent:true});
+    }
+  };
+  document.addEventListener('pointerdown',activate,{once:true,passive:true});
+  document.addEventListener('touchstart',activate,{once:true,passive:true});
 }
 
 function modal(html){$('#modal').innerHTML=`<div class="modal"><div class="card">${html}</div></div>`;document.querySelector('[data-close]')?.addEventListener('click',()=>$('#modal').innerHTML='')}
@@ -334,7 +356,7 @@ function sendTyping(active){if(!A.active||window.__linkaWs?.readyState!==1)retur
 function setTypingBubble(active){const box=$('#msgs');if(!box)return;let el=$('#remoteTypingBubble');if(active){if(!el){el=document.createElement('div');el.id='remoteTypingBubble';el.className='bubble typingBubble';el.innerHTML='<span class="typingDots"><i></i><i></i><i></i></span>';box.appendChild(el)}box.scrollTop=box.scrollHeight}else if(el)el.remove()}
 function showTyping(active,from){if(!A.active||String(A.active.id)!==String(from))return;const el=$('#chatPresence');if(!el)return;if(active){A.remoteTyping=true;el.textContent='digitando…';setTypingBubble(true)}else{A.remoteTyping=false;el.textContent=presenceText(A.active);setTypingBubble(false)}}
 async function loadPendingCalls(){try{const list=await api('/api/calls/pending');for(const d of list){if(!A.call.id)handleCallRoomInvite(d)}}catch{}}
-function connect(){const proto=location.protocol==='https:'?'wss':'ws';const ws=new WebSocket(proto+'://'+location.host+'/?token='+encodeURIComponent(A.token));window.__linkaPresenceIntentionalClose=false;ws.onopen=()=>{try{ws.send(JSON.stringify({type:document.visibilityState==='hidden'?'presence-offline':'presence-online'}))}catch{};loadPendingCalls()};ws.onmessage=async e=>{if(typeof e.data!=='string')return;let d;try{d=JSON.parse(e.data)}catch{return}if(d.type==='contact_added'){await loadContacts();renderList();toast('Novo contato adicionado')}if(d.type==='presence'){await loadContacts();refreshPresence()}if(d.type==='typing'){showTyping(!!d.active,d.from)}if(d.type==='call-room-invite'){handleCallRoomInvite(d)}if(d.type==='call-live-start'){handleLiveStart(d)}if(d.type==='call-live-ready'){handleLiveReady(d)}if(d.type==='call-live-audio'){handleLiveAudio(d)}if(d.type==='call-video-ready'){handleVideoReady(d)}if(d.type==='call-video-offer'){handleVideoOffer(d)}if(d.type==='call-video-answer'){handleVideoAnswer(d)}if(d.type==='call-video-ice'){handleVideoIce(d)}if(d.type==='call-offer'){handleIncomingOffer(d)}if(d.type==='call-answer'){handleCallAnswer(d)}if(d.type==='call-ice'){handleCallIce(d)}if(d.type==='call-reject'){toast('Chamada recusada');endCall(false)}if(d.type==='call-busy'){toast('Contato está em outra chamada');endCall(false)}if(d.type==='call-end'){toast('Chamada encerrada');endCall(false);if($('#callsTab')?.classList.contains('active'))callsView()}if(d.type==='notification'){A.notifications.unshift(d.notification);A.notifications=A.notifications.slice(0,100);updateNotifBell();if(d.notification.kind==='message'){toast('Nova mensagem de '+d.notification.title);notifyIncoming({from:d.notification.from,type:'text',text:d.notification.body})}else toast(d.notification.title);return}if(d.type==='message'){if(A.active&&String(d.message.from)===String(A.active.id)){showTyping(false,d.message.from);A.messages.push(d.message);if(!A.chatIds.includes(String(d.message.from)))A.chatIds.push(String(d.message.from));drawMessages()}else{toast('Nova mensagem');notifyIncoming(d.message)}}};ws.onclose=()=>{if(!window.__linkaPresenceIntentionalClose)setTimeout(()=>A.token&&connect(),3000)};window.__linkaWs=ws}
+function connect(){const proto=location.protocol==='https:'?'wss':'ws';const ws=new WebSocket(proto+'://'+location.host+'/?token='+encodeURIComponent(A.token));window.__linkaPresenceIntentionalClose=false;ws.onopen=()=>{try{ws.send(JSON.stringify({type:document.visibilityState==='hidden'?'presence-offline':'presence-online'}))}catch{};loadPendingCalls()};ws.onmessage=async e=>{if(typeof e.data!=='string')return;let d;try{d=JSON.parse(e.data)}catch{return}if(d.type==='contact_added'){await loadContacts();renderList();toast('Novo contato adicionado')}if(d.type==='presence'){await loadContacts();refreshPresence()}if(d.type==='typing'){showTyping(!!d.active,d.from)}if(d.type==='call-room-invite'){const caller=A.contacts.find(x=>String(x.id)===String(d.from));inAppNotify('Chamada recebida',`${caller?.name||'Um contato'} está ligando para você`,()=>handleCallRoomInvite(d));handleCallRoomInvite(d)}if(d.type==='call-live-start'){handleLiveStart(d)}if(d.type==='call-live-ready'){handleLiveReady(d)}if(d.type==='call-live-audio'){handleLiveAudio(d)}if(d.type==='call-video-ready'){handleVideoReady(d)}if(d.type==='call-video-offer'){handleVideoOffer(d)}if(d.type==='call-video-answer'){handleVideoAnswer(d)}if(d.type==='call-video-ice'){handleVideoIce(d)}if(d.type==='call-offer'){handleIncomingOffer(d)}if(d.type==='call-answer'){handleCallAnswer(d)}if(d.type==='call-ice'){handleCallIce(d)}if(d.type==='call-reject'){toast('Chamada recusada');endCall(false)}if(d.type==='call-busy'){toast('Contato está em outra chamada');endCall(false)}if(d.type==='call-end'){toast('Chamada encerrada');endCall(false);if($('#callsTab')?.classList.contains('active'))callsView()}if(d.type==='notification'){A.notifications.unshift(d.notification);A.notifications=A.notifications.slice(0,100);updateNotifBell();if(d.notification.kind==='message'){toast('Nova mensagem de '+d.notification.title);notifyIncoming({from:d.notification.from,type:'text',text:d.notification.body})}else toast(d.notification.title);return}if(d.type==='message'){if(A.active&&String(d.message.from)===String(A.active.id)){showTyping(false,d.message.from);A.messages.push(d.message);if(!A.chatIds.includes(String(d.message.from)))A.chatIds.push(String(d.message.from));drawMessages()}else{const sender=A.contacts.find(x=>String(x.id)===String(d.message.from));inAppNotify(sender?.name||'Nova mensagem',d.message.type==='audio'?'Enviou um áudio':(d.message.text||'Nova mensagem'),()=>openChat(String(d.message.from)));toast('Nova mensagem');notifyIncoming(d.message)}}};ws.onclose=()=>{if(!window.__linkaPresenceIntentionalClose)setTimeout(()=>A.token&&connect(),3000)};window.__linkaWs=ws}
 let presenceVisibilityTimer=null;
 document.addEventListener('visibilitychange',()=>{clearTimeout(presenceVisibilityTimer);if(!A.token)return;if(document.visibilityState==='hidden'){presenceVisibilityTimer=setTimeout(()=>{const ws=window.__linkaWs;if(ws?.readyState===1)try{ws.send(JSON.stringify({type:'presence-offline'}))}catch{}} ,500)}else{const ws=window.__linkaWs;if(ws?.readyState===1)try{ws.send(JSON.stringify({type:'presence-online'}))}catch{}}});
 window.addEventListener('pagehide',()=>{const ws=window.__linkaWs;if(ws?.readyState===1)try{ws.send(JSON.stringify({type:'presence-offline'}))}catch{}});

@@ -23,3 +23,7 @@ No Firebase Console, registre um app Web no mesmo projeto e habilite/configure C
 
 ## Segurança
 A Service Account é segredo de servidor. A configuração Web e a chave VAPID pública podem ser usadas no cliente, mas a chave privada da Service Account nunca deve ir para `www/` ou para o GitHub.
+
+
+### Chamada de voz
+A chamada usa WebRTC com STUN e TURN como fallback. O TURN público é usado apenas como fallback para redes que não permitem conexão P2P direta.

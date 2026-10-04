@@ -34,26 +34,22 @@ let db={
 
 function normalizeDB(x){
   db=x&&typeof x==='object'?x:db;
-
   db.users??=[];
   db.contacts??={};
   db.messages??={};
   db.sessions??={};
   db.pushSubscriptions??={};
   db.pushKeys??=null;
-
   return db;
 }
 
 function readLocal(){
   try{
-    if(fs.existsSync(DATA)){
+    if(fs.existsSync(DATA))
       return JSON.parse(fs.readFileSync(DATA,'utf8'));
-    }
 
-    if(fs.existsSync(BACKUP)){
+    if(fs.existsSync(BACKUP))
       return JSON.parse(fs.readFileSync(BACKUP,'utf8'));
-    }
   }catch(e){
     console.error('Falha ao ler armazenamento local:',e);
   }
@@ -64,8 +60,10 @@ function readLocal(){
 async function supabaseRequest(pathname,options={}){
   if(!REMOTE_ENABLED)return null;
 
+  const cleanPath=String(pathname||'').replace(/^\/+/,'');
+
   const r=await fetch(
-    SUPABASE_URL+'/rest/v1/'+pathname,
+    SUPABASE_URL+'/rest/v1/'+cleanPath,
     {
       ...options,
       headers:{
@@ -90,11 +88,6 @@ async function supabaseRequest(pathname,options={}){
   return text?JSON.parse(text):null;
 }
 
-/*
-  IMPORTANTE:
-  Se o Supabase der erro, NÃO usamos o banco local
-  para depois sobrescrever o banco remoto.
-*/
 async function loadRemote(){
 
   if(!REMOTE_ENABLED){
@@ -119,7 +112,6 @@ async function loadRemote(){
         found:true,
         data:rows[0].data
       };
-
     }
 
     return {
@@ -153,9 +145,11 @@ function writeLocal(){
   try{
 
     const tmp=DATA+'.tmp';
-    const text=JSON.stringify(db);
 
-    fs.writeFileSync(tmp,text);
+    fs.writeFileSync(
+      tmp,
+      JSON.stringify(db)
+    );
 
     if(fs.existsSync(DATA)){
       try{
@@ -185,7 +179,8 @@ async function pushRemote(snapshot){
       {
         method:'POST',
         headers:{
-          Prefer:'resolution=merge-duplicates,return=minimal'
+          Prefer:
+          'resolution=merge-duplicates,return=minimal'
         },
         body:JSON.stringify({
           id:1,
@@ -222,7 +217,8 @@ function save(){
     saveRunning=true;
     saveAgain=false;
 
-    const snapshot=JSON.parse(JSON.stringify(db));
+    const snapshot=
+      JSON.parse(JSON.stringify(db));
 
     await pushRemote(snapshot);
 
@@ -245,7 +241,11 @@ function hash(
 ){
   return {
     s,
-    h:crypto.scryptSync(p,s,64).toString('hex')
+    h:crypto.scryptSync(
+      p,
+      s,
+      64
+    ).toString('hex')
   };
 }
 
@@ -254,29 +254,20 @@ function check(p,u){
   try{
 
     return crypto.timingSafeEqual(
-      Buffer.from(hash(p,u.s).h,'hex'),
-      Buffer.from(u.h,'hex')
+      Buffer.from(
+        hash(p,u.s).h,
+        'hex'
+      ),
+      Buffer.from(
+        u.h,
+        'hex'
+      )
     );
 
   }catch{
 
     return false;
   }
-}
-
-function safe(u,self=false){
-
-  return {
-    id:u.id,
-    username:u.username,
-    name:u.name,
-    status:u.status,
-    photo:u.photo||'',
-    ...(self?{chatBg:u.chatBg||''}:{}),
-    lastSeen:u.lastSeen||u.createdAt,
-    online:isUserOnline(u.id),
-    createdAt:u.createdAt
-  };
 }
 
 const sessions=new Map();
@@ -291,7 +282,9 @@ function isUserOnline(uid){
     if(
       idv===uid &&
       [...wss.clients].some(
-        c=>c.readyState===1&&c.token===token
+        c=>
+          c.readyState===1 &&
+          c.token===token
       )
     ){
 
@@ -299,13 +292,34 @@ function isUserOnline(uid){
     }
   }
 
-  const u=db.users.find(x=>x.id===uid);
+  const u=db.users.find(
+    x=>x.id===uid
+  );
 
   return !!(
     u &&
     u.lastSeen &&
     Date.now()-u.lastSeen<60000
   );
+}
+
+function safe(u,self=false){
+
+  return {
+    id:u.id,
+    username:u.username,
+    name:u.name,
+    status:u.status,
+    photo:u.photo||'',
+    ...(self?{
+      chatBg:u.chatBg||''
+    }:{}),
+    lastSeen:
+      u.lastSeen||u.createdAt,
+    online:
+      isUserOnline(u.id),
+    createdAt:u.createdAt
+  };
 }
 
 function touch(uid){
@@ -318,7 +332,6 @@ function touch(uid){
 
     u.lastSeen=Date.now();
     save();
-
   }
 }
 
@@ -328,7 +341,9 @@ function auth(req,res,next){
     req.headers.authorization||''
   ).replace('Bearer ','');
 
-  let uid=sessions.get(t)||db.sessions[t];
+  let uid=
+    sessions.get(t)||
+    db.sessions[t];
 
   if(uid){
     sessions.set(t,uid);
@@ -338,7 +353,9 @@ function auth(req,res,next){
 
     return res
       .status(401)
-      .json({error:'Sessão expirada'});
+      .json({
+        error:'Sessão expirada'
+      });
   }
 
   req.user=db.users.find(
@@ -349,7 +366,9 @@ function auth(req,res,next){
 
     return res
       .status(401)
-      .json({error:'Usuário não encontrado'});
+      .json({
+        error:'Usuário não encontrado'
+      });
   }
 
   next();
@@ -388,7 +407,8 @@ function sendUser(uid,msg){
 
 async function pushUser(uid,payload){
 
-  const list=db.pushSubscriptions[uid]||[];
+  const list=
+    db.pushSubscriptions[uid]||[];
 
   if(!list.length)return;
 
@@ -415,7 +435,6 @@ async function pushUser(uid,payload){
         e.statusCode!==404 &&
         e.statusCode!==410
       ){
-
         next.push(sub);
       }
     }
@@ -515,7 +534,11 @@ app.post(
 
     const token=id();
 
-    sessions.set(token,u.id);
+    sessions.set(
+      token,
+      u.id
+    );
+
     db.sessions[token]=u.id;
 
     save();
@@ -618,7 +641,9 @@ app.post(
 
     save();
 
-    res.json({ok:true});
+    res.json({
+      ok:true
+    });
 
   }
 );
@@ -706,7 +731,6 @@ app.put(
 
   }
 );
-
 /* BUSCAR USUÁRIOS */
 
 app.get(
@@ -853,12 +877,14 @@ app.delete(
 
     save();
 
-    res.json({ok:true});
+    res.json({
+      ok:true
+    });
 
   }
 );
 
-/* PUSH */
+/* NOTIFICAÇÕES */
 
 app.get(
   '/api/push/vapid-public-key',
@@ -867,8 +893,9 @@ app.get(
 
     res.json({
       publicKey:
-        process.env.VAPID_PUBLIC_KEY ||
-        db.pushKeys.publicKey
+        process.env.VAPID_PUBLIC_KEY||
+        db.pushKeys?.publicKey||
+        ''
     });
 
   }
@@ -921,7 +948,9 @@ app.post(
 
     save();
 
-    res.json({ok:true});
+    res.json({
+      ok:true
+    });
 
   }
 );
@@ -951,7 +980,9 @@ app.delete(
 
     save();
 
-    res.json({ok:true});
+    res.json({
+      ok:true
+    });
 
   }
 );
@@ -1100,7 +1131,8 @@ app.post(
     pushUser(
       other,
       {
-        title:req.user.name||
+        title:
+          req.user.name||
           'Nova mensagem',
         body:preview,
         icon:'/icon-192.png',
@@ -1114,20 +1146,6 @@ app.post(
     res.json(m);
 
   }
-);
-
-/* FRONTEND */
-
-app.get(
-  /.*/,
-  (req,res)=>
-    res.sendFile(
-      path.join(
-        __dirname,
-        'www',
-        'index.html'
-      )
-    )
 );
 
 /* WEBSOCKET */
@@ -1234,9 +1252,10 @@ async function boot(){
     await loadRemote();
 
   /*
-    Se o Supabase estiver com erro,
-    o servidor para e NÃO sobrescreve
-    a conta salva remotamente.
+    SEGURANÇA:
+    Se o Supabase responder com erro,
+    o servidor NÃO usa o banco local
+    para sobrescrever os dados remotos.
   */
 
   if(
@@ -1316,15 +1335,17 @@ async function boot(){
   }else{
 
     console.warn(
-      'ATENÇÃO: SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY não configurados; os dados continuarão temporários no Render Free.'
+      'ATENÇÃO: SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY não configurados.'
     );
   }
 
   server.listen(
     PORT,
-    ()=>console.log(
-      'Linka rodando na porta '+PORT
-    )
+    ()=>{
+      console.log(
+        'Linka rodando na porta '+PORT
+      );
+    }
   );
 }
 

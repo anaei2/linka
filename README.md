@@ -31,3 +31,7 @@ A chamada usa WebRTC com STUN e TURN como fallback. O TURN público é usado ape
 
 ## Chamada por sala
 A chamada agora usa uma sala de conexão: os dois participantes digitam o mesmo código (por padrão, **L**) antes da negociação WebRTC começar. O código é apenas uma etapa de sincronização; o áudio continua sendo WebRTC.
+
+
+## Chamadas de voz
+As chamadas usam o WebSocket seguro do próprio Linka para transportar áudio PCM em tempo real, além do código de sala. Isso evita depender de STUN/TURN e funciona na mesma conexão WSS usada pelo aplicativo.

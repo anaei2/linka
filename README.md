@@ -1,36 +1,25 @@
-# Linka — persistência no Render Free
+# Linka 2.1 — FCM
 
-Esta versão não depende de Persistent Disk. As contas, contatos, mensagens, sessões e configurações são armazenadas em uma tabela JSON no Supabase.
+Versão do Linka usando Firebase Cloud Messaging (FCM) para notificações web.
 
-## 1. Criar o armazenamento
+## Render
+Configure estas variáveis:
 
-1. Abra o SQL Editor do seu projeto Supabase.
-2. Cole o conteúdo de `supabase.sql`.
-3. Execute.
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `FIREBASE_SERVICE_ACCOUNT_JSON` — JSON completo da Service Account do Firebase. Nunca coloque este valor no GitHub.
+- `FIREBASE_API_KEY`
+- `FIREBASE_AUTH_DOMAIN`
+- `FIREBASE_PROJECT_ID`
+- `FIREBASE_STORAGE_BUCKET`
+- `FIREBASE_MESSAGING_SENDER_ID`
+- `FIREBASE_APP_ID`
+- `FIREBASE_VAPID_KEY` — chave pública VAPID da configuração Web do Cloud Messaging.
 
-## 2. Configurar o Render
+O navegador registra `firebase-messaging-sw.js`, gera o token FCM e envia o token autenticado para o servidor. O servidor guarda os tokens no estado persistido do Supabase e usa Firebase Admin para enviar notificações.
 
-No serviço `linka`, abra **Environment** e crie:
+## Firebase Web
+No Firebase Console, registre um app Web no mesmo projeto e habilite/configure Cloud Messaging. Em Configurações do projeto > Cloud Messaging > Web Push certificates, gere ou use uma chave VAPID pública.
 
-- `SUPABASE_URL` = URL do seu projeto Supabase.
-- `SUPABASE_SERVICE_ROLE_KEY` = chave secreta `service_role` do Supabase.
-
-O `render.yaml` já declara essas variáveis como secretas (`sync: false`).
-
-**Nunca coloque a `service_role` no HTML, JavaScript do navegador, GitHub público ou envie essa chave em conversa.**
-
-## 3. Deploy
-
-Faça commit/push destes arquivos e deixe o Render fazer o deploy.
-
-Na primeira inicialização, se a tabela estiver vazia, o Linka usa os dados locais disponíveis e grava o estado no Supabase.
-
-Depois disso, reiniciar o serviço ou o Render acordar o serviço não apaga as contas.
-
-## 4. Manter conectado
-
-O navegador já guarda `ac_token` no `localStorage` quando **Manter conectado neste dispositivo** está marcado. Como a sessão também fica no Supabase, o token continua válido depois de um reinício do Render.
-
-## 5. Sem Supabase configurado
-
-O projeto ainda funciona localmente usando `data.json`, mas no Render Free isso é temporário. Para persistência no Free, configure as duas variáveis do Supabase.
+## Segurança
+A Service Account é segredo de servidor. A configuração Web e a chave VAPID pública podem ser usadas no cliente, mas a chave privada da Service Account nunca deve ir para `www/` ou para o GitHub.

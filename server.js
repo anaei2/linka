@@ -1,5 +1,5 @@
 const http=require('http'), fs=require('fs'), path=require('path'), crypto=require('crypto');
-const express=require('express'), WebSocket=require('ws'), webpush=require('web-push');
+const express=require('express'), WebSocket=require('ws'), admin=require('firebase-admin');
 const app=express(); const server=http.createServer(app); const wss=new WebSocket.Server({server});
 const PORT=process.env.PORT||3000;
 const DATA_DIR=process.env.DATA_DIR||path.join(__dirname);
@@ -9,12 +9,42 @@ const SUPABASE_KEY=String(process.env.SUPABASE_SERVICE_ROLE_KEY||'');
 const REMOTE_ENABLED=!!(SUPABASE_URL&&SUPABASE_KEY);
 try{fs.mkdirSync(DATA_DIR,{recursive:true})}catch(e){console.error('Não foi possível criar DATA_DIR:',e)}
 
-app.use(express.json({limit:'12mb'})); app.use(express.static(path.join(__dirname,'www')));
-let db={users:[],contacts:{},messages:{},sessions:{},pushSubscriptions:{},pushKeys:null,notifications:{}};
+app.use(express.json({limit:'12mb'}));
+app.get('/firebase-messaging-sw.js',(req,res)=>{
+  const c=firebaseConfig();
+  if(!c.apiKey||!c.projectId||!c.messagingSenderId||!c.appId){return res.status(503).type('application/javascript').send('/* Firebase FCM not configured */');}
+  res.type('application/javascript').send(`importScripts('https://www.gstatic.com/firebasejs/11.10.0/firebase-app-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/11.10.0/firebase-messaging-compat.js');
+firebase.initializeApp(${JSON.stringify(c)});
+const messaging=firebase.messaging();
+self.addEventListener('notificationclick',(event)=>{event.notification.close();const d=event.notification.data||{};const url=d.chatId?'/?chat='+encodeURIComponent(d.chatId):'/';event.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(cs=>{for(const c of cs){if('focus' in c){c.navigate(url);return c.focus()}}return clients.openWindow(url)}));});`);
+});
+app.use(express.static(path.join(__dirname,'www')));
+let db={users:[],contacts:{},messages:{},sessions:{},fcmTokens:{},notifications:{}};
+let firebaseReady=false;
+function initFirebase(){
+  try{
+    if(admin.apps.length){firebaseReady=true;return}
+    const raw=String(process.env.FIREBASE_SERVICE_ACCOUNT_JSON||'').trim();
+    if(!raw){console.warn('Firebase FCM: FIREBASE_SERVICE_ACCOUNT_JSON não configurado.');return}
+    const serviceAccount=JSON.parse(raw);
+    admin.initializeApp({credential:admin.credential.cert(serviceAccount)});
+    firebaseReady=true;
+    console.log('Firebase FCM ativado.');
+  }catch(e){console.error('Falha ao inicializar Firebase FCM:',e.message)}
+}
+function firebaseConfig(){return {
+  apiKey:process.env.FIREBASE_API_KEY||'',
+  authDomain:process.env.FIREBASE_AUTH_DOMAIN||'',
+  projectId:process.env.FIREBASE_PROJECT_ID||'',
+  storageBucket:process.env.FIREBASE_STORAGE_BUCKET||'',
+  messagingSenderId:process.env.FIREBASE_MESSAGING_SENDER_ID||'',
+  appId:process.env.FIREBASE_APP_ID||''
+}}
 
 function normalizeDB(x){
   db=x&&typeof x==='object'?x:db;
-  db.users??=[]; db.contacts??={}; db.messages??={}; db.sessions??={}; db.pushSubscriptions??={}; db.pushKeys??=null; db.notifications??={};
+  db.users??=[]; db.contacts??={}; db.messages??={}; db.sessions??={}; db.fcmTokens??={}; db.notifications??={};
   return db;
 }
 function readLocal(){
@@ -34,16 +64,11 @@ async function supabaseRequest(pathname,options={}){
   const text=await r.text(); return text?JSON.parse(text):null;
 }
 async function loadRemote(){
-  if(!REMOTE_ENABLED)return {enabled:false,exists:false,data:null};
+  if(!REMOTE_ENABLED)return null;
   try{
     const rows=await supabaseRequest('linka_state?id=eq.1&select=data,updated_at',{method:'GET'});
-    if(!Array.isArray(rows)) throw new Error('Resposta inválida do Supabase ao carregar o banco.');
-    if(!rows.length) return {enabled:true,exists:false,data:null};
-    return {enabled:true,exists:true,data:rows[0]?.data||null};
-  }catch(e){
-    console.error('Falha ao carregar banco Supabase:',e);
-    throw new Error('Não foi possível carregar o banco do Supabase. O servidor foi impedido de inicializar para evitar apagar os dados remotos.');
-  }
+    return rows?.[0]?.data||null;
+  }catch(e){console.error('Falha ao carregar banco Supabase:',e);return null}
 }
 let saveTimer=null, saveRunning=false, saveAgain=false;
 function writeLocal(){
@@ -85,7 +110,29 @@ function auth(req,res,next){const t=(req.headers.authorization||'').replace('Bea
 function pair(a,b){return [a,b].sort().join(':')}
 function sendUser(uid,msg){for(const [token,idv] of sessions){if(idv!==uid)continue;for(const c of wss.clients)if(c.readyState===1&&c.token===token)c.send(JSON.stringify(msg))}}
 function addNotification(uid,n){db.notifications[uid]??=[];const item={id:id(),createdAt:Date.now(),read:false,...n};db.notifications[uid].unshift(item);db.notifications[uid]=db.notifications[uid].slice(0,100);save();sendUser(uid,{type:'notification',notification:item});return item}
-async function pushUser(uid,payload){const list=db.pushSubscriptions[uid]||[];if(!list.length)return;const next=[];for(const sub of list){try{await webpush.sendNotification(sub,JSON.stringify(payload),{TTL:60});next.push(sub)}catch(e){if(e.statusCode!==404&&e.statusCode!==410)next.push(sub)}}if(next.length!==list.length){db.pushSubscriptions[uid]=next;save()}}
+async function pushUser(uid,payload){
+  if(!firebaseReady)return {sent:0,skipped:true};
+  const tokens=[...(db.fcmTokens[uid]||[])];
+  if(!tokens.length)return {sent:0};
+  const message={
+    tokens,
+    notification:{title:String(payload.title||'Linka'),body:String(payload.body||'')},
+    data:Object.fromEntries(Object.entries(payload.data||{}).map(([k,v])=>[String(k),String(v)])),
+    webpush:{
+      notification:{icon:payload.icon||'/icon-192.png',badge:payload.badge||'/icon-192.png',tag:payload.tag||'linka'},
+      fcmOptions:{link:payload.data?.chatId?`/?chat=${encodeURIComponent(payload.data.chatId)}`:'/'}
+    }
+  };
+  try{
+    const response=await admin.messaging().sendEachForMulticast(message);
+    const invalid=[];
+    response.responses.forEach((r,i)=>{
+      if(!r.success && ['messaging/registration-token-not-registered','messaging/invalid-registration-token'].includes(r.error?.code)) invalid.push(tokens[i]);
+    });
+    if(invalid.length){db.fcmTokens[uid]=(db.fcmTokens[uid]||[]).filter(t=>!invalid.includes(t));save()}
+    return {sent:response.successCount,failed:response.failureCount};
+  }catch(e){console.error('Falha ao enviar FCM:',e.message);return {sent:0,failed:tokens.length};}
+}
 
 app.post('/api/register',(req,res)=>{let {name,username,password}=req.body||{};name=String(name||'').trim();username=String(username||'').trim().toLowerCase().replace(/^@/,'');password=String(password||'');if(name.length<2||username.length<3||password.length<6)return res.status(400).json({error:'Use nome, usuário com pelo menos 3 caracteres e senha com 6 caracteres.'});if(!/^[a-z0-9._-]+$/.test(username))return res.status(400).json({error:'Usuário: apenas letras, números, ponto, _ ou -.'});if(db.users.some(u=>u.username===username))return res.status(409).json({error:'Esse usuário já existe.'});const x=hash(password),u={id:id(),name,username,status:'Disponível',photo:'',s:x.s,h:x.h,createdAt:Date.now()};db.users.push(u);db.contacts[u.id]=[];save();const token=id();sessions.set(token,u.id);db.sessions[token]=u.id;save();res.json({token,user:safe(u,true)});});
 app.post('/api/login',(req,res)=>{const username=String(req.body?.username||'').trim().toLowerCase().replace(/^@/,'');const password=String(req.body?.password||'');const u=db.users.find(x=>x.username===username);if(!u||!check(password,u))return res.status(401).json({error:'Usuário ou senha inválidos.'});const token=id();sessions.set(token,u.id);db.sessions[token]=u.id;save();res.json({token,user:safe(u,true)});});
@@ -98,9 +145,9 @@ app.get('/api/contacts',auth,(req,res)=>{const ids=db.contacts[req.user.id]||[];
 app.get('/api/users/:id',auth,(req,res)=>{const u=db.users.find(x=>x.id===req.params.id);if(!u)return res.status(404).json({error:'Usuário não encontrado.'});res.json(safe(u));});
 app.post('/api/contacts/:id',auth,(req,res)=>{const other=db.users.find(u=>u.id===req.params.id);if(!other||other.id===req.user.id)return res.status(404).json({error:'Usuário não encontrado.'});db.contacts[req.user.id]??=[];if(!db.contacts[req.user.id].includes(other.id))db.contacts[req.user.id].push(other.id);save();const note=addNotification(other.id,{kind:'contact',title:'Novo contato',body:(req.user.name||'Alguém')+' adicionou você aos contatos.',from:req.user.id});sendUser(other.id,{type:'contact_added',by:safe(req.user)});pushUser(other.id,{title:note.title,body:note.body,icon:'/icon-192.png',badge:'/icon-192.png',data:{notificationId:note.id}}).catch(()=>{});res.json({user:safe(other)});});
 app.delete('/api/contacts/:id',auth,(req,res)=>{db.contacts[req.user.id]=(db.contacts[req.user.id]||[]).filter(x=>x!==req.params.id);save();res.json({ok:true})});
-app.get('/api/push/vapid-public-key',auth,(req,res)=>res.json({publicKey:process.env.VAPID_PUBLIC_KEY||db.pushKeys.publicKey}));
-app.post('/api/push/subscribe',auth,(req,res)=>{const sub=req.body?.subscription;if(!sub||!sub.endpoint||!sub.keys?.p256dh||!sub.keys?.auth)return res.status(400).json({error:'Assinatura de notificação inválida.'});db.pushSubscriptions[req.user.id]??=[];const list=db.pushSubscriptions[req.user.id];if(!list.some(x=>x.endpoint===sub.endpoint))list.push(sub);db.pushSubscriptions[req.user.id]=list.slice(-5);save();res.json({ok:true})});
-app.delete('/api/push/subscribe',auth,(req,res)=>{const endpoint=String(req.body?.endpoint||'');if(endpoint)db.pushSubscriptions[req.user.id]=(db.pushSubscriptions[req.user.id]||[]).filter(x=>x.endpoint!==endpoint);save();res.json({ok:true})});
+app.get('/api/firebase-config',(req,res)=>{const c=firebaseConfig();if(!c.apiKey||!c.projectId||!c.messagingSenderId||!c.appId||!process.env.FIREBASE_VAPID_KEY)return res.status(503).json({error:'Firebase FCM ainda não está configurado no servidor.'});res.json({...c,vapidKey:process.env.FIREBASE_VAPID_KEY});});
+app.post('/api/fcm/token',auth,(req,res)=>{const token=String(req.body?.token||'').trim();if(!token||token.length<20)return res.status(400).json({error:'Token FCM inválido.'});db.fcmTokens[req.user.id]??=[];const list=db.fcmTokens[req.user.id];if(!list.includes(token))list.push(token);db.fcmTokens[req.user.id]=list.slice(-10);save();res.json({ok:true});});
+app.delete('/api/fcm/token',auth,(req,res)=>{const token=String(req.body?.token||'').trim();if(token)db.fcmTokens[req.user.id]=(db.fcmTokens[req.user.id]||[]).filter(t=>t!==token);save();res.json({ok:true})});
 app.get('/api/notifications',auth,(req,res)=>{const list=db.notifications[req.user.id]||[];res.json(list.slice(0,100));});
 app.post('/api/notifications/read-all',auth,(req,res)=>{const list=db.notifications[req.user.id]||[];list.forEach(n=>n.read=true);save();res.json({ok:true});});
 app.post('/api/notifications/:id/read',auth,(req,res)=>{const n=(db.notifications[req.user.id]||[]).find(x=>x.id===req.params.id);if(!n)return res.status(404).json({error:'Notificação não encontrada.'});n.read=true;save();res.json({ok:true});});
@@ -111,32 +158,10 @@ wss.on('connection',(ws,req)=>{const token=new URL(req.url,'http://localhost').s
 
 async function boot(){
   const remote=await loadRemote();
-
-  if(remote.enabled && remote.exists){
-    // O Supabase é a fonte oficial dos dados. Nunca substitua um banco remoto
-    // existente por um data.json local, especialmente após um restart do Render.
-    normalizeDB(remote.data);
-    console.log('Linka: dados carregados do Supabase.');
-  }else if(remote.enabled && !remote.exists){
-    // Só usamos o armazenamento local para a primeira inicialização, quando a
-    // tabela ainda não possui a linha id=1. Se não houver dados locais, criaremos
-    // um banco vazio e o enviaremos ao Supabase uma única vez.
-    normalizeDB(readLocal()||db);
-    console.log('Linka: linha id=1 não existe no Supabase; inicializando o banco remoto.');
-  }else{
-    normalizeDB(readLocal()||db);
-  }
-
-  if(!db.pushKeys){db.pushKeys=webpush.generateVAPIDKeys();}
-  writeLocal();
-  webpush.setVapidDetails(process.env.VAPID_SUBJECT||'mailto:linka@localhost',process.env.VAPID_PUBLIC_KEY||db.pushKeys.publicKey,process.env.VAPID_PRIVATE_KEY||db.pushKeys.privateKey);
-
-  if(REMOTE_ENABLED){
-    // Apenas cria/atualiza a linha quando o carregamento remoto foi bem-sucedido.
-    // Em caso de erro, loadRemote() lança e o processo termina sem apagar dados.
-    await pushRemote(JSON.parse(JSON.stringify(db)));
-    console.log('Linka: persistência Supabase ativada.');
-  }else console.warn('ATENÇÃO: SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY não configurados; os dados continuarão temporários no Render Free.');
+  if(remote){normalizeDB(remote);console.log('Linka: dados carregados do Supabase.');}
+  else {normalizeDB(readLocal()||db);if(REMOTE_ENABLED){console.log('Linka: nenhum banco remoto encontrado; enviando os dados locais para o Supabase.');}}
+  initFirebase();
+  if(REMOTE_ENABLED){await pushRemote(JSON.parse(JSON.stringify(db)));console.log('Linka: persistência Supabase ativada.');}else console.warn('ATENÇÃO: SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY não configurados; os dados continuarão temporários no Render Free.');
   server.listen(PORT,()=>console.log('Linka rodando na porta '+PORT));
 }
 boot().catch(e=>{console.error('Falha ao iniciar o Linka:',e);process.exit(1)});

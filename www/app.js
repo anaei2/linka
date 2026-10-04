@@ -70,25 +70,42 @@ async function setupNotifications(){
   try{
     const permission=await Notification.requestPermission();
     if(permission!=='granted'){toast('Notificações não autorizadas');return}
-    if(!('serviceWorker' in navigator)||!('PushManager' in window)){toast('Notificações ativadas neste navegador');return}
-    const reg=await navigator.serviceWorker.register('/sw.js');
-    const key=await api('/api/push/vapid-public-key');
-    let sub=await reg.pushManager.getSubscription();
-    if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8Array(key.publicKey)});
-    await api('/api/push/subscribe',{method:'POST',body:{subscription:sub.toJSON()}});
+    if(!('serviceWorker' in navigator)){toast('Seu navegador não suporta notificações FCM');return}
+    const cfg=await api('/api/firebase-config');
+    if(!window.firebase){toast('Firebase não carregou');return}
+    if(!firebase.apps.length)firebase.initializeApp(cfg);
+    const messaging=firebase.messaging();
+    const reg=await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+    const token=await messaging.getToken({vapidKey:cfg.vapidKey,serviceWorkerRegistration:reg});
+    if(!token)throw new Error('Token FCM não foi gerado');
+    await api('/api/fcm/token',{method:'POST',body:{token}});
+    window.__linkaFcmToken=token;
     toast('Notificações ativadas');
-  }catch(e){console.error(e);toast('Não foi possível ativar notificações')}
+  }catch(e){console.error('FCM:',e);toast('Não foi possível ativar notificações')}
 }
-function base64ToUint8Array(base64){const pad='='.repeat((4-base64.length%4)%4),raw=atob((base64+pad).replace(/-/g,'+').replace(/_/g,'/')),out=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);return out}
-async function initNotifications(){try{if(!('serviceWorker' in navigator)||!('PushManager' in window))return;const reg=await navigator.serviceWorker.register('/sw.js');if('Notification' in window&&Notification.permission==='granted'){const key=await api('/api/push/vapid-public-key');let sub=await reg.pushManager.getSubscription();if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8Array(key.publicKey)});await api('/api/push/subscribe',{method:'POST',body:{subscription:sub.toJSON()}})}}catch(e){console.warn('Notificações:',e)}}
-function notifyIncoming(m){
-  const contact=A.contacts.find(c=>String(c.id)===String(m.from));
-  const title=contact?.name||'Nova mensagem';
-  const body=m.type==='audio'?'Áudio recebido':(m.text||'Nova mensagem');
-  if('Notification' in window&&Notification.permission==='granted'&&document.visibilityState!=='visible')try{new Notification(title,{body,icon:'/icon-192.png',tag:'linka-'+m.from})}catch{}
-  document.title='(1) Linka';
-  setTimeout(()=>{if(document.title==='(1) Linka')document.title='Linka'},4000);
+async function initNotifications(){
+  try{
+    if(!('serviceWorker' in navigator)||!window.firebase)return;
+    const permission=Notification.permission;
+    if(permission!=='granted')return;
+    const cfg=await api('/api/firebase-config');
+    if(!firebase.apps.length)firebase.initializeApp(cfg);
+    const messaging=firebase.messaging();
+    const reg=await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+    const token=await messaging.getToken({vapidKey:cfg.vapidKey,serviceWorkerRegistration:reg});
+    if(token){window.__linkaFcmToken=token;await api('/api/fcm/token',{method:'POST',body:{token}})}
+    messaging.onMessage(payload=>{
+      const n=payload.notification||{};
+      const data=payload.data||{};
+      const title=n.title||'Linka';
+      const body=n.body||'Nova notificação';
+      if(document.visibilityState!=='visible')try{new Notification(title,{body,icon:'/icon-192.png',tag:data.chatId?'linka-'+data.chatId:'linka'})}catch{}
+      if(data.chatId){toast(title+': '+body)}else toast(body);
+      loadNotifications().then(updateNotifBell).catch(()=>{});
+    });
+  }catch(e){console.warn('FCM:',e)}
 }
+
 function modal(html){$('#modal').innerHTML=`<div class="modal"><div class="card">${html}</div></div>`;document.querySelector('[data-close]')?.addEventListener('click',()=>$('#modal').innerHTML='')}
 function sendTyping(active){if(!A.active||window.__linkaWs?.readyState!==1)return;try{window.__linkaWs.send(JSON.stringify({type:'typing',to:A.active.id,active:!!active}))}catch{}}
 function showTyping(active,from){if(!A.active||String(A.active.id)!==String(from))return;const el=$('#chatPresence');if(!el)return;if(active){A.remoteTyping=true;el.innerHTML='<span class="typingDots"><i></i><i></i><i></i></span>'}else{A.remoteTyping=false;el.textContent=presenceText(A.active)}}

@@ -17,21 +17,6 @@ app.get('/firebase-messaging-sw.js',(req,res)=>{
 importScripts('https://www.gstatic.com/firebasejs/11.10.0/firebase-messaging-compat.js');
 firebase.initializeApp(${JSON.stringify(c)});
 const messaging=firebase.messaging();
-messaging.onBackgroundMessage((payload)=>{
-  const n=payload.notification||{};
-  const d=payload.data||{};
-  const title=String(n.title||'Linka');
-  const body=String(n.body||'Nova mensagem');
-  const options={
-    body,
-    icon:n.icon||'/icon-192.png',
-    badge:n.badge||'/icon-192.png',
-    tag:d.chatId?'linka-'+d.chatId:'linka',
-    renotify:true,
-    data:d
-  };
-  return self.registration.showNotification(title,options);
-});
 self.addEventListener('notificationclick',(event)=>{event.notification.close();const d=event.notification.data||{};const url=d.chatId?'/?chat='+encodeURIComponent(d.chatId):'/';event.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(cs=>{for(const c of cs){if('focus' in c){c.navigate(url);return c.focus()}}return clients.openWindow(url)}));});`);
 });
 app.use(express.static(path.join(__dirname,'www')));
@@ -169,7 +154,7 @@ app.post('/api/notifications/:id/read',auth,(req,res)=>{const n=(db.notification
 app.get('/api/messages/:id',auth,(req,res)=>{const other=req.params.id;if(!db.users.some(u=>u.id===other))return res.status(404).json({error:'Usuário não encontrado.'});res.json(db.messages[pair(req.user.id,other)]||[])});
 app.post('/api/messages/:id',auth,(req,res)=>{const other=req.params.id;const u=db.users.find(x=>x.id===other);if(!u)return res.status(404).json({error:'Usuário não encontrado.'});let m;if(req.body?.type==='audio'){const audio=String(req.body?.audio||'');if(!/^data:audio\/[A-Za-z0-9.+-]+(?:;[^,]*)?;base64,[A-Za-z0-9+/=]+$/.test(audio)||audio.length>10*1024*1024)return res.status(400).json({error:'Áudio inválido ou muito grande.'});m={id:id(),from:req.user.id,to:other,type:'audio',audio,createdAt:Date.now()};}else{const text=String(req.body?.text||'').trim();if(!text||text.length>4000)return res.status(400).json({error:'Mensagem inválida.'});m={id:id(),from:req.user.id,to:other,type:'text',text,createdAt:Date.now()};}const k=pair(req.user.id,other);db.messages[k]??=[];db.messages[k].push(m);db.messages[k]=db.messages[k].slice(-500);save();sendUser(other,{type:'message',message:m});const preview=m.type==='audio'?'Áudio recebido':m.text;const note=addNotification(other.id,{kind:'message',title:req.user.name||'Nova mensagem',body:preview,from:req.user.id,chatId:req.user.id});pushUser(other,{title:note.title,body:note.body,icon:'/icon-192.png',badge:'/icon-192.png',data:{chatId:req.user.id,notificationId:note.id}}).catch(()=>{});res.json(m);});
 app.get(/.*/,(req,res)=>res.sendFile(path.join(__dirname,'www','index.html')));
-wss.on('connection',(ws,req)=>{const token=new URL(req.url,'http://localhost').searchParams.get('token');const uid=sessions.get(token)||db.sessions[token];if(uid)sessions.set(token,uid);if(!uid){ws.close();return}ws.token=token;touch(uid);ws.on('message',buf=>{try{const d=JSON.parse(buf);if(d.type==='ping')touch(uid);if(d.type==='typing'&&d.to)sendUser(d.to,{type:'typing',from:uid,active:!!d.active})}catch{}});ws.on('close',()=>{touch(uid);sendUser(uid,{type:'presence',id:uid})});sendUser(uid,{type:'presence',id:uid})});
+wss.on('connection',(ws,req)=>{const token=new URL(req.url,'http://localhost').searchParams.get('token');const uid=sessions.get(token)||db.sessions[token];if(uid)sessions.set(token,uid);if(!uid){ws.close();return}ws.token=token;touch(uid);ws.on('message',buf=>{try{const d=JSON.parse(buf);if(d.type==='ping')touch(uid);if(d.type==='typing'&&d.to)sendUser(d.to,{type:'typing',from:uid,active:!!d.active});if(['call-offer','call-answer','call-ice','call-reject','call-busy','call-end'].includes(d.type)&&d.to)sendUser(d.to,{...d,from:uid})}catch{}});ws.on('close',()=>{touch(uid);sendUser(uid,{type:'presence',id:uid})});sendUser(uid,{type:'presence',id:uid})});
 
 async function boot(){
   const remote=await loadRemote();

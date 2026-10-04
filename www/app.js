@@ -112,7 +112,31 @@ function sendSignal(to,payload){const ws=window.__linkaWs;if(!to||!ws||ws.readyS
 function ensureCallUi(){if($('#callOverlay'))return;document.body.insertAdjacentHTML('beforeend',`<div id="callOverlay" class="callOverlay" hidden><div class="callCard"><div id="callAvatar" class="callAvatar"></div><h2 id="callName">Chamada</h2><p id="callStatus">Conectando…</p><div class="callActions"><button id="callDecline" class="callDecline" type="button" aria-label="Recusar chamada"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.8 3.8 6c-.7.7-.8 1.8-.2 2.6 2.1 2.9 5 5.8 7.9 7.9.8.6 1.9.5 2.6-.2l1.2-1.2-3-3-1.1 1.1c-1.2-.9-2.5-2.2-3.4-3.4l1.1-1.1-3-3z"/><path d="m4 4 16 16"/></svg></button><button id="callAccept" class="callAccept" type="button" aria-label="Atender chamada"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8c1.5 2.9 3.7 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1.1-.2 1 .3 2 .5 3 .5.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C11.5 21 3 12.5 3 2.5c0-.6.4-1 1-1H7c.6 0 1 .4 1 1 0 1 .2 2 .5 3 .1.4 0 .8-.2 1.1.2l-1.7 1.7z"/></svg></button></div><button id="callEnd" class="callEnd" type="button" aria-label="Encerrar chamada"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 16"/></svg><span>Encerrar</span></button><audio id="callRemoteAudio" autoplay playsinline></audio></div></div>`);$('#callDecline').onclick=()=>{if(A.call.incoming)sendSignal(A.call.incoming.from,{type:'call-reject',callId:A.call.incoming.callId});endCall(true)};$('#callAccept').onclick=acceptIncomingCall;$('#callEnd').onclick=()=>endCall(false)}
 function showCallOverlay(name,photo,status,incoming=false){ensureCallUi();const o=$('#callOverlay');o.hidden=false;$('#callAvatar').innerHTML=photo?`<img src="${esc(photo)}">`:esc((name||'?')[0].toUpperCase());$('#callName').textContent=name||'Chamada';$('#callStatus').textContent=status||'Chamada';$('#callAccept').hidden=!incoming;$('#callDecline').hidden=!incoming;$('#callEnd').hidden=incoming;}
 function hideCallOverlay(){const o=$('#callOverlay');if(o)o.hidden=true}
-function setupPeer(peerId,callId){const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun.cloudflare.com:3478'}]});A.call.pc=pc;A.call.peer=peerId;A.call.id=callId;A.call.pendingCandidates=[];pc.onicecandidate=e=>{if(e.candidate)sendSignal(peerId,{type:'call-ice',callId,candidate:e.candidate});};pc.ontrack=e=>{const a=$('#callRemoteAudio');if(a){a.srcObject=e.streams[0];a.play?.().catch(()=>{})}};pc.onconnectionstatechange=()=>{if(['failed','disconnected'].includes(pc.connectionState))endCall(true);if(pc.connectionState==='connected')$('#callStatus').textContent='Conectado'};return pc}
+function setupPeer(peerId,callId){
+  const iceServers=[
+    {urls:'stun:stun.l.google.com:19302'},
+    {urls:'stun:stun.cloudflare.com:3478'},
+    {urls:'turn:openrelay.metered.ca:80',username:'openrelayproject',credential:'openrelayproject'},
+    {urls:'turn:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'},
+    {urls:'turns:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'}
+  ];
+  const pc=new RTCPeerConnection({iceServers});
+  A.call.pc=pc;A.call.peer=peerId;A.call.id=callId;A.call.pendingCandidates=[];
+  pc.onicecandidate=e=>{if(e.candidate)sendSignal(peerId,{type:'call-ice',callId,candidate:e.candidate});};
+  pc.onicecandidateerror=e=>console.warn('WebRTC ICE error:',e.errorCode,e.errorText||'');
+  pc.ontrack=e=>{const a=$('#callRemoteAudio');if(a){a.srcObject=e.streams[0];a.play?.().catch(()=>{})}};
+  pc.oniceconnectionstatechange=()=>{
+    const st=pc.iceConnectionState;
+    if(st==='checking'){$('#callStatus')?.textContent='Conectando…'}
+    if(st==='connected'||st==='completed'){$('#callStatus')?.textContent='Conectado'}
+    if(st==='failed'){console.warn('WebRTC ICE falhou');$('#callStatus')?.textContent='Não foi possível conectar';}
+  };
+  pc.onconnectionstatechange=()=>{
+    if(pc.connectionState==='connected')$('#callStatus').textContent='Conectado';
+    if(pc.connectionState==='failed'){console.warn('WebRTC conexão falhou');$('#callStatus').textContent='Falha na conexão';}
+  };
+  return pc
+}
 async function startOutgoingCall(contact){if(A.call.pc){toast('Você já está em uma chamada');return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});const callId=crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random();const pc=setupPeer(contact.id,callId);A.call.stream=stream;stream.getTracks().forEach(t=>pc.addTrack(t,stream));showCallOverlay(contact.name,contact.photo,'Chamando…',false);const offer=await pc.createOffer();await pc.setLocalDescription(offer);if(!sendSignal(contact.id,{type:'call-offer',callId,offer:{type:offer.type,sdp:offer.sdp}})){endCall(true);toast('Não foi possível iniciar a chamada')} }catch(e){console.error(e);endCall(true);toast('Não foi possível acessar o microfone. Verifique a permissão do navegador.')}}
 async function handleIncomingCall(d){if(A.call.pc){sendSignal(d.from,{type:'call-busy',callId:d.callId});return}A.call.incoming=d;A.call.earlyCandidates=A.call.earlyCandidates||[];const contact=A.contacts.find(x=>String(x.id)===String(d.from))||{};showCallOverlay(contact.name||'Contato',contact.photo,'Chamada recebida',true)}
 async function acceptIncomingCall(){const d=A.call.incoming;if(!d)return;try{const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});const pc=setupPeer(d.from,d.callId);A.call.stream=stream;stream.getTracks().forEach(t=>pc.addTrack(t,stream));await pc.setRemoteDescription(d.offer);const queued=[...(A.call.earlyCandidates||[]),...(A.call.pendingCandidates||[])];A.call.earlyCandidates=[];A.call.pendingCandidates=[];for(const c of queued)await pc.addIceCandidate(c).catch(()=>{});const answer=await pc.createAnswer();await pc.setLocalDescription(answer);sendSignal(d.from,{type:'call-answer',callId:d.callId,answer:{type:answer.type,sdp:answer.sdp}});A.call.incoming=null;$('#callAccept').hidden=true;$('#callDecline').hidden=true;$('#callEnd').hidden=false;$('#callStatus').textContent='Conectando…'}catch(e){console.error(e);toast('Não foi possível usar o microfone');sendSignal(d.from,{type:'call-reject',callId:d.callId});endCall(true)}}

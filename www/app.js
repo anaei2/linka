@@ -144,7 +144,7 @@ function startOutgoingRing(){
   stopOutgoingRing();
   try{
     const C=window.AudioContext||window.webkitAudioContext;if(!C)return;
-    const ctx=new C();const gain=ctx.createGain();gain.gain.value=0.055;gain.connect(ctx.destination);A.call.ringContext=ctx;A.call.ringGain=gain;
+    const ctx=new C();const gain=ctx.createGain();gain.gain.value=0.34;gain.connect(ctx.destination);A.call.ringContext=ctx;A.call.ringGain=gain;
     const tone=()=>{
       if(!A.call.id||A.call.accepted===false||A.call.connectedAt)return;
       const now=ctx.currentTime;

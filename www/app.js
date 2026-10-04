@@ -1,4 +1,4 @@
-const A={token:localStorage.getItem('ac_token')||sessionStorage.getItem('ac_token')||'',user:null,contacts:[],active:null,search:'',messages:[],typingTimer:null,remoteTyping:false,notifications:[],calls:[],call:{pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[],roomCode:null,roomRole:null,roomJoined:false,remoteRoomJoined:false,roomName:null,roomPhoto:null,mode:'audio',videoPc:null,videoLocal:null,videoRemote:null,videoOffer:null,videoIceQueue:[],videoRemoteIceQueue:[],audioContext:null,source:null,processor:null,silentGain:null,playTime:0,accepted:false,liveStarted:false,connectedAt:null,callTimer:null}};
+const A={token:localStorage.getItem('ac_token')||sessionStorage.getItem('ac_token')||'',user:null,contacts:[],active:null,search:'',messages:[],typingTimer:null,remoteTyping:false,notifications:[],calls:[],call:{pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[],roomCode:null,roomRole:null,roomJoined:false,remoteRoomJoined:false,roomName:null,roomPhoto:null,mode:'audio',videoPc:null,videoLocal:null,videoRemote:null,videoOffer:null,videoIceQueue:[],videoRemoteIceQueue:[],audioContext:null,source:null,processor:null,silentGain:null,playTime:0,accepted:false,liveStarted:false,connectedAt:null,callTimer:null,ringContext:null,ringGain:null,ringTimer:null}};
 // Impede o menu nativo de seleção/cópia do navegador dentro do aplicativo.
 document.addEventListener('contextmenu',e=>e.preventDefault(),{capture:true});
 document.addEventListener('selectstart',e=>e.preventDefault(),{capture:true});
@@ -133,6 +133,29 @@ function ensureCallUi(){
   $('#callDecline').onclick=()=>{const d=A.call.incoming;if(d?.from)sendSignal(d.from,{type:'call-reject',callId:d.callId});endCall(true)};
   $('#callEnd').onclick=()=>endCall(true);
 }
+
+function stopOutgoingRing(){
+  try{if(A.call.ringTimer)clearInterval(A.call.ringTimer)}catch{}
+  try{A.call.ringGain?.disconnect()}catch{}
+  try{A.call.ringContext?.close()}catch{}
+  A.call.ringTimer=null;A.call.ringGain=null;A.call.ringContext=null;
+}
+function startOutgoingRing(){
+  stopOutgoingRing();
+  try{
+    const C=window.AudioContext||window.webkitAudioContext;if(!C)return;
+    const ctx=new C();const gain=ctx.createGain();gain.gain.value=0.055;gain.connect(ctx.destination);A.call.ringContext=ctx;A.call.ringGain=gain;
+    const tone=()=>{
+      if(!A.call.id||A.call.accepted===false||A.call.connectedAt)return;
+      const now=ctx.currentTime;
+      const a=ctx.createOscillator(),b=ctx.createOscillator(),g=ctx.createGain();
+      a.type='sine';b.type='sine';a.frequency.value=440;b.frequency.value=554.37;
+      g.gain.setValueAtTime(0.0001,now);g.gain.exponentialRampToValueAtTime(0.8,now+0.025);g.gain.exponentialRampToValueAtTime(0.0001,now+0.32);
+      a.connect(g);b.connect(g);g.connect(gain);a.start(now);b.start(now);a.stop(now+0.34);b.stop(now+0.34);
+    };
+    tone();A.call.ringTimer=setInterval(tone,1800);
+  }catch(e){console.warn('Som da chamada',e)}
+}
 function startCallTimer(){
   if(A.call.callTimer)clearInterval(A.call.callTimer);
   A.call.connectedAt=Date.now();
@@ -199,6 +222,7 @@ function playLiveAudio(b64){
   const now=ctx.currentTime;A.call.playTime=Math.max(A.call.playTime||now+0.05,now+0.03);src.start(A.call.playTime);A.call.playTime+=buffer.duration;
 }
 async function acceptIncomingCall(){
+  stopOutgoingRing();
   if(!A.call.id||!A.call.peer)return;
   if(A.call.mode==='video'){return acceptIncomingVideoCall()}
   try{
@@ -272,7 +296,7 @@ function startOutgoingCall(contact){
   if(A.call.id){toast('Você já está em uma chamada');return}
   const callId=crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random();
   A.call.peer=contact.id;A.call.id=callId;A.call.incoming=null;A.call.accepted=true;A.call.liveStarted=false;A.call.connectedAt=null;A.call.callTimer=null;A.call.roomName=contact.name;A.call.roomPhoto=contact.photo||'';
-  showCallOverlay(contact.name,contact.photo,'Chamando…',false);
+  showCallOverlay(contact.name,contact.photo,'Chamando…',false);startOutgoingRing();
   if(!sendSignal(contact.id,{type:'call-room-invite',callId})){endCall(false);toast('Não foi possível iniciar a chamada')}
 }
 function handleCallRoomInvite(d){
@@ -282,8 +306,9 @@ function handleCallRoomInvite(d){
   showCallOverlay(A.call.roomName,A.call.roomPhoto,A.call.mode==='video'?'Chamada de vídeo recebida':'Chamada recebida',true);if(A.call.mode==='video')showVideoStage();
 }
 function endCall(notifyPeer=false){
+  stopOutgoingRing();
   const peer=A.call.peer,id=A.call.id;if(notifyPeer&&peer&&id)sendSignal(peer,{type:'call-end',callId:id});
-  stopLiveAudio();if(A.call.callTimer)clearInterval(A.call.callTimer);A.call={pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[],roomCode:null,roomRole:null,roomJoined:false,remoteRoomJoined:false,roomName:null,roomPhoto:null,mode:'audio',videoPc:null,videoLocal:null,videoRemote:null,videoOffer:null,videoIceQueue:[],videoRemoteIceQueue:[],audioContext:null,source:null,processor:null,silentGain:null,playTime:0,accepted:false,liveStarted:false,connectedAt:null,callTimer:null};hideCallOverlay();
+  stopLiveAudio();if(A.call.callTimer)clearInterval(A.call.callTimer);A.call={pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[],roomCode:null,roomRole:null,roomJoined:false,remoteRoomJoined:false,roomName:null,roomPhoto:null,mode:'audio',videoPc:null,videoLocal:null,videoRemote:null,videoOffer:null,videoIceQueue:[],videoRemoteIceQueue:[],audioContext:null,source:null,processor:null,silentGain:null,playTime:0,accepted:false,liveStarted:false,connectedAt:null,callTimer:null,ringContext:null,ringGain:null,ringTimer:null};hideCallOverlay();
 }
 function sendTyping(active){if(!A.active||window.__linkaWs?.readyState!==1)return;try{window.__linkaWs.send(JSON.stringify({type:'typing',to:A.active.id,active:!!active}))}catch{}}
 function showTyping(active,from){if(!A.active||String(A.active.id)!==String(from))return;const el=$('#chatPresence');if(!el)return;if(active){A.remoteTyping=true;el.innerHTML='<span class="typingDots"><i></i><i></i><i></i></span>'}else{A.remoteTyping=false;el.textContent=presenceText(A.active)}}

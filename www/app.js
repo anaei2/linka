@@ -1,4 +1,4 @@
-const A={token:localStorage.getItem('ac_token')||sessionStorage.getItem('ac_token')||'',user:null,contacts:[],active:null,search:'',messages:[],typingTimer:null,remoteTyping:false,notifications:[],call:{pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[],roomCode:null,roomRole:null,roomJoined:false,remoteRoomJoined:false,roomName:null,roomPhoto:null}};
+const A={token:localStorage.getItem('ac_token')||sessionStorage.getItem('ac_token')||'',user:null,contacts:[],active:null,search:'',messages:[],typingTimer:null,remoteTyping:false,notifications:[],call:{pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[],roomCode:null,roomRole:null,roomJoined:false,remoteRoomJoined:false,roomName:null,roomPhoto:null,audioContext:null,source:null,processor:null,silentGain:null,playTime:0}};
 // Impede o menu nativo de seleção/cópia do navegador dentro do aplicativo.
 document.addEventListener('contextmenu',e=>e.preventDefault(),{capture:true});
 document.addEventListener('selectstart',e=>e.preventDefault(),{capture:true});
@@ -139,8 +139,7 @@ function showCallOverlay(name,photo,status,incoming=false){
   ensureCallUi();const o=$('#callOverlay');o.hidden=false;
   $('#callAvatar').innerHTML=photo?`<img src="${esc(photo)}">`:esc((name||'?')[0].toUpperCase());
   $('#callName').textContent=name||'Chamada';$('#callStatus').textContent=status||'Chamada';
-  $('#callAccept').hidden=false;$('#callDecline').hidden=!incoming;$('#callEnd').hidden=true;
-  $('#callRoomBox').hidden=true;
+  $('#callAccept').hidden=false;$('#callDecline').hidden=!incoming;$('#callEnd').hidden=true;$('#callRoomBox').hidden=true;
 }
 function showRoomPrompt(name,photo,incoming=false){
   showCallOverlay(name,photo,'Digite o mesmo código nos dois celulares',incoming);
@@ -149,164 +148,94 @@ function showRoomPrompt(name,photo,incoming=false){
   const join=$('#callRoomJoin');if(join){join.disabled=false;join.textContent='Entrar na sala';}
   $('#callAccept').hidden=true;
 }
-function hideRoomPrompt(){const box=$('#callRoomBox');if(box)box.hidden=true;$('#callAccept').hidden=true;}
+function hideRoomPrompt(){const box=$('#callRoomBox');if(box)box.hidden=true;$('#callAccept').hidden=true}
 function hideCallOverlay(){const o=$('#callOverlay');if(o)o.hidden=true}
 
-function setupPeer(peerId,callId){
-  const iceServers=[
-    {urls:'stun:stun.l.google.com:19302'},
-    {urls:'stun:stun.cloudflare.com:3478'},
-    {urls:'turn:openrelay.metered.ca:80',username:'openrelayproject',credential:'openrelayproject'},
-    {urls:'turn:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'},
-    {urls:'turns:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'}
-  ];
-  const pc=new RTCPeerConnection({iceServers,iceCandidatePoolSize:10,bundlePolicy:'max-bundle',rtcpMuxPolicy:'require'});
-  A.call.pc=pc;A.call.peer=peerId;A.call.id=callId;A.call.pendingCandidates=[];A.call.iceErrors=[];
-  pc.onicecandidate=e=>{
-    if(e.candidate){
-      const c=e.candidate.toJSON?e.candidate.toJSON():e.candidate;
-      sendSignal(peerId,{type:'call-ice',callId,candidate:c});
-    }
-  };
-  pc.onicecandidateerror=e=>{
-    console.warn('WebRTC ICE error:',e.errorCode,e.errorText||'',e.url||'');
-    A.call.iceErrors.push({code:e.errorCode,text:e.errorText||'',url:e.url||''});
-  };
-  pc.ontrack=e=>{
-    const a=$('#callRemoteAudio');
-    if(a){
-      a.srcObject=e.streams[0];
-      a.muted=false;
-      const play=a.play?.();
-      if(play&&play.catch)play.catch(err=>console.warn('Remote audio play:',err));
-    }
-  };
-  pc.oniceconnectionstatechange=()=>{
-    const st=pc.iceConnectionState;
-    const el=$('#callStatus');
-    if(st==='checking'&&el)el.textContent='Conectando…';
-    if((st==='connected'||st==='completed')&&el)el.textContent='Conectado';
-    if(st==='failed'&&el)el.textContent='Falha na conexão';
-  };
-  pc.onconnectionstatechange=()=>{
-    const st=pc.connectionState;
-    const el=$('#callStatus');
-    if(st==='connecting'&&el)el.textContent='Conectando…';
-    if(st==='connected'&&el)el.textContent='Conectado';
-    if(st==='failed'&&el)el.textContent='Falha na conexão';
-    if(st==='disconnected'&&el)el.textContent='Reconectando…';
-  };
-  return pc;
+function b64FromBytes(bytes){let s='';const step=0x8000;for(let i=0;i<bytes.length;i+=step)s+=String.fromCharCode(...bytes.subarray(i,i+step));return btoa(s)}
+function bytesFromB64(b64){const s=atob(b64);const a=new Uint8Array(s.length);for(let i=0;i<s.length;i++)a[i]=s.charCodeAt(i);return a}
+function downsampleTo16k(input,srcRate){if(srcRate===16000)return input;const ratio=srcRate/16000;const len=Math.round(input.length/ratio);const out=new Float32Array(len);let o=0,pos=0;while(o<len){const next=Math.round((o+1)*ratio);let sum=0,count=0;for(let i=Math.round(pos);i<Math.min(next,input.length);i++){sum+=input[i];count++}out[o++]=count?sum/count:0;pos=next}return out}
+function pcm16Base64(samples){const a=new Int16Array(samples.length);for(let i=0;i<samples.length;i++){const v=Math.max(-1,Math.min(1,samples[i]));a[i]=v<0?v*32768:v*32767}return b64FromBytes(new Uint8Array(a.buffer))}
+function base64ToFloat32(b64){const u=bytesFromB64(b64);const a=new Int16Array(u.buffer,u.byteOffset,Math.floor(u.byteLength/2));const out=new Float32Array(a.length);for(let i=0;i<a.length;i++)out[i]=a[i]/32768;return out}
+function stopLiveAudio(){
+  try{A.call.processor?.disconnect()}catch{} try{A.call.source?.disconnect()}catch{} try{A.call.silentGain?.disconnect()}catch{}
+  A.call.stream?.getTracks().forEach(t=>t.stop());
+  try{A.call.audioContext?.close()}catch{}
+  A.call.processor=null;A.call.source=null;A.call.silentGain=null;A.call.audioContext=null;A.call.playTime=0;
 }
-function waitForIceGathering(pc,timeout=8000){
-  if(pc.iceGatheringState==='complete')return Promise.resolve();
-  return new Promise(resolve=>{
-    let done=false;
-    const finish=()=>{if(done)return;done=true;clearTimeout(timer);pc.removeEventListener('icegatheringstatechange',check);resolve()};
-    const check=()=>{if(pc.iceGatheringState==='complete')finish()};
-    const timer=setTimeout(finish,timeout);
-    pc.addEventListener('icegatheringstatechange',check);
-  });
+async function startLiveAudio(){
+  if(A.call.audioContext&&A.call.processor)return true;
+  const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
+  const ctx=new (window.AudioContext||window.webkitAudioContext)();await ctx.resume();
+  const source=ctx.createMediaStreamSource(stream);
+  const processor=ctx.createScriptProcessor(4096,1,1);
+  const silent=ctx.createGain();silent.gain.value=0;
+  A.call.stream=stream;A.call.audioContext=ctx;A.call.source=source;A.call.processor=processor;A.call.silentGain=silent;A.call.playTime=ctx.currentTime+0.08;
+  processor.onaudioprocess=e=>{
+    if(!A.call.id||!A.call.peer||window.__linkaWs?.readyState!==1)return;
+    const input=e.inputBuffer.getChannelData(0);const pcm=downsampleTo16k(input,ctx.sampleRate);
+    if(!pcm.length)return;
+    try{window.__linkaWs.send(JSON.stringify({to:A.call.peer,type:'call-live-audio',callId:A.call.id,pcm:pcm16Base64(pcm)}))}catch{}
+  };
+  source.connect(processor);processor.connect(silent);silent.connect(ctx.destination);
+  return true;
 }
+function playLiveAudio(b64){
+  if(!A.call.audioContext||!b64)return;
+  const ctx=A.call.audioContext;if(ctx.state==='suspended')ctx.resume().catch(()=>{});
+  const samples=base64ToFloat32(b64);if(!samples.length)return;
+  const buffer=ctx.createBuffer(1,samples.length,16000);buffer.copyToChannel(samples,0);
+  const src=ctx.createBufferSource();src.buffer=buffer;src.connect(ctx.destination);
+  const now=ctx.currentTime;A.call.playTime=Math.max(A.call.playTime||now+0.05,now+0.03);src.start(A.call.playTime);A.call.playTime+=buffer.duration;
+}
+async function startLiveHost(){
+  try{await startLiveAudio();hideRoomPrompt();$('#callDecline').hidden=true;$('#callEnd').hidden=false;$('#callStatus').textContent='Conectando áudio…';sendSignal(A.call.peer,{type:'call-live-start',callId:A.call.id})}
+  catch(e){console.error(e);toast('Não foi possível acessar o microfone');endCall(true)}
+}
+async function handleLiveStart(d){
+  if(!d?.callId||d.callId!==A.call.id)return;
+  try{await startLiveAudio();hideRoomPrompt();$('#callDecline').hidden=true;$('#callEnd').hidden=false;$('#callStatus').textContent='Conectado';sendSignal(d.from,{type:'call-live-ready',callId:d.callId})}
+  catch(e){console.error(e);toast('Não foi possível acessar o microfone');sendSignal(d.from,{type:'call-reject',callId:d.callId});endCall(false)}
+}
+function handleLiveReady(d){if(d?.callId===A.call.id){hideRoomPrompt();$('#callDecline').hidden=true;$('#callEnd').hidden=false;$('#callStatus').textContent='Conectado'}}
+function handleLiveAudio(d){if(d?.callId===A.call.id&&A.call.peer===d.from)playLiveAudio(d.pcm)}
+
 async function startOutgoingCall(contact){
-  if(A.call.pc||A.call.id){toast('Você já está em uma chamada');return}
+  if(A.call.id){toast('Você já está em uma chamada');return}
   const callId=crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random();
-  A.call.peer=contact.id;A.call.id=callId;A.call.roomRole='host';A.call.roomCode='L';A.call.roomJoined=false;A.call.remoteRoomJoined=false;A.call.roomName=contact.name;A.call.roomPhoto=contact.photo||'';
+  A.call.peer=contact.id;A.call.id=callId;A.call.roomRole='host';A.call.roomCode='L';A.call.roomJoined=false;A.call.remoteRoomJoined=false;A.call.roomName=contact.name;A.call.roomPhoto=contact.photo||'';A.call.incoming=null;
   showRoomPrompt(contact.name,contact.photo,false);
-  if(!sendSignal(contact.id,{type:'call-room-invite',callId,roomCodeHint:'L'})){
-    endCall(false);toast('Não foi possível iniciar a sala');
-  }
+  if(!sendSignal(contact.id,{type:'call-room-invite',callId,roomCodeHint:'L'})){endCall(false);toast('Não foi possível iniciar a sala')}
 }
-async function handleCallRoomInvite(d){
-  if(A.call.pc||A.call.id){if(d?.from)sendSignal(d.from,{type:'call-busy',callId:d.callId});return}
+function handleCallRoomInvite(d){
+  if(A.call.id){if(d?.from)sendSignal(d.from,{type:'call-busy',callId:d.callId});return}
   const contact=A.contacts.find(x=>String(x.id)===String(d.from))||{};
-  A.call.incoming=d;A.call.peer=d.from;A.call.id=d.callId;A.call.roomRole='guest';A.call.roomCode=null;A.call.roomJoined=false;A.call.remoteRoomJoined=false;A.call.roomName=contact.name||'Contato';A.call.roomPhoto=contact.photo||'';A.call.earlyCandidates=[];
+  A.call.incoming=d;A.call.peer=d.from;A.call.id=d.callId;A.call.roomRole='guest';A.call.roomCode=null;A.call.roomJoined=false;A.call.remoteRoomJoined=false;A.call.roomName=contact.name||'Contato';A.call.roomPhoto=contact.photo||'';
   showRoomPrompt(A.call.roomName,A.call.roomPhoto,true);
 }
 async function joinCallRoom(){
   if(!A.call.id||!A.call.peer)return;
-  const input=$('#callRoomCode');const code=String(input?.value||'').trim().toUpperCase();
-  if(!code){toast('Digite o código da sala');return}
-  A.call.roomCode=code;A.call.roomJoined=true;
-  if(input)input.disabled=true;const join=$('#callRoomJoin');if(join)join.disabled=true;$('#callAccept').hidden=true;
+  const input=$('#callRoomCode');const code=String(input?.value||'').trim().toUpperCase();if(!code){toast('Digite o código da sala');return}
+  A.call.roomCode=code;A.call.roomJoined=true;if(input)input.disabled=true;const join=$('#callRoomJoin');if(join)join.disabled=true;
   const ok=sendSignal(A.call.peer,{type:'call-room-join',callId:A.call.id,roomCode:code,role:A.call.roomRole});
   if(!ok){toast('Não foi possível entrar na sala');endCall(false);return}
   $('#callStatus').textContent='Aguardando a outra pessoa entrar com o mesmo código…';
-  if(A.call.remoteRoomJoined&&A.call.roomRole==='host')startWebRTCHost();
+  if(A.call.remoteRoomJoined&&A.call.roomRole==='host')startLiveHost();
 }
 function handleCallRoomJoin(d){
   if(!d?.callId||d.callId!==A.call.id||!A.call.peer)return;
-  const remoteCode=String(d.roomCode||'').toUpperCase();
   if(!A.call.roomJoined||!A.call.roomCode)return;
-  if(remoteCode!==A.call.roomCode){sendSignal(d.from,{type:'call-room-error',callId:d.callId,message:'Código da sala não confere'});$('#callStatus').textContent='O código da sala não confere';return}
-  A.call.remoteRoomJoined=true;
-  sendSignal(d.from,{type:'call-room-joined',callId:d.callId,roomCode:A.call.roomCode});
-  if(A.call.roomRole==='host')startWebRTCHost();
-  else $('#callStatus').textContent='Sala confirmada. Aguardando conexão…';
+  if(String(d.roomCode||'').toUpperCase()!==A.call.roomCode){sendSignal(d.from,{type:'call-room-error',callId:d.callId,message:'Código da sala não confere'});$('#callStatus').textContent='O código da sala não confere';return}
+  A.call.remoteRoomJoined=true;sendSignal(d.from,{type:'call-room-joined',callId:d.callId,roomCode:A.call.roomCode});
+  if(A.call.roomRole==='host')startLiveHost();else $('#callStatus').textContent='Sala confirmada. Aguardando áudio…';
 }
-function handleCallRoomJoined(d){
-  if(!d?.callId||d.callId!==A.call.id||!A.call.roomJoined)return;
-  if(String(d.roomCode||'').toUpperCase()!==A.call.roomCode)return;
-  A.call.remoteRoomJoined=true;
-  if(A.call.roomRole==='host')startWebRTCHost();
-  else $('#callStatus').textContent='Sala confirmada. Aguardando conexão…';
-}
-function handleCallRoomError(d){
-  if(!d?.callId||d.callId!==A.call.id)return;
-  $('#callStatus').textContent=d.message||'Código da sala inválido';
-  const input=$('#callRoomCode');if(input){input.disabled=false;input.focus()}
-  const join=$('#callRoomJoin');if(join){join.disabled=false;join.textContent='Entrar na sala'}
-  A.call.roomJoined=false;
-}
-async function startWebRTCHost(){
-  if(A.call.pc||!A.call.remoteRoomJoined||A.call.roomRole!=='host')return;
-  try{
-    const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
-    const pc=setupPeer(A.call.peer,A.call.id);A.call.stream=stream;stream.getTracks().forEach(t=>pc.addTrack(t,stream));
-    hideRoomPrompt();$('#callStatus').textContent='Conectando…';
-    const offer=await pc.createOffer({offerToReceiveAudio:true});await pc.setLocalDescription(offer);await waitForIceGathering(pc);
-    const local=pc.localDescription;if(!local)throw new Error('Descrição local indisponível');
-    if(!sendSignal(A.call.peer,{type:'call-offer',callId:A.call.id,offer:{type:local.type,sdp:local.sdp}}))throw new Error('Sinalização indisponível');
-  }catch(e){console.error(e);toast('Não foi possível iniciar o áudio. Verifique a permissão do microfone.');endCall(true)}
-}
-async function handleIncomingCall(d){
-  if(A.call.pc){if(d?.from)sendSignal(d.from,{type:'call-busy',callId:d.callId});return}
-  A.call.incoming=d;A.call.peer=d.from;A.call.id=d.callId;A.call.roomRole='guest';A.call.roomJoined=false;A.call.remoteRoomJoined=false;showRoomPrompt(A.call.roomName||'Contato',A.call.roomPhoto||'',true);
-}
-async function acceptIncomingCall(){
-  const d=A.call.incoming;if(!d||!A.call.roomJoined)return;
-  try{
-    const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});const pc=setupPeer(d.from,d.callId);A.call.stream=stream;stream.getTracks().forEach(t=>pc.addTrack(t,stream));
-    await pc.setRemoteDescription(d.offer);
-    const queued=[...(A.call.earlyCandidates||[]),...(A.call.pendingCandidates||[])];A.call.earlyCandidates=[];A.call.pendingCandidates=[];
-    for(const c of queued)await pc.addIceCandidate(c).catch(err=>console.warn('ICE queued:',err));
-    const answer=await pc.createAnswer({offerToReceiveAudio:true});await pc.setLocalDescription(answer);await waitForIceGathering(pc);
-    const local=pc.localDescription;if(!local)throw new Error('Descrição local indisponível');
-    sendSignal(d.from,{type:'call-answer',callId:d.callId,answer:{type:local.type,sdp:local.sdp}});A.call.incoming=null;hideRoomPrompt();$('#callDecline').hidden=true;$('#callEnd').hidden=false;$('#callStatus').textContent='Conectando…';
-  }catch(e){console.error(e);toast('Não foi possível conectar a chamada');if(d?.from)sendSignal(d.from,{type:'call-reject',callId:d.callId});endCall(true)}
-}
-async function handleCallAnswer(d){
-  if(!A.call.pc||d.callId!==A.call.id)return;
-  try{await A.call.pc.setRemoteDescription(d.answer);for(const c of A.call.pendingCandidates.splice(0))await A.call.pc.addIceCandidate(c).catch(err=>console.warn('ICE answer:',err));}
-  catch(e){console.error(e);endCall(true)}
-}
-async function handleCallIce(d){
-  if(!d?.candidate||!d.callId)return;let c;try{c=new RTCIceCandidate(d.candidate)}catch(e){console.warn('ICE inválido:',e);return}
-  if(A.call.pc&&d.callId===A.call.id){if(A.call.pc.remoteDescription)await A.call.pc.addIceCandidate(c).catch(err=>console.warn('ICE add:',err));else A.call.pendingCandidates.push(c);return}
-  if(A.call.incoming&&d.callId===A.call.incoming.callId){A.call.earlyCandidates=A.call.earlyCandidates||[];A.call.earlyCandidates.push(c)}
-}
-function handleIncomingOffer(d){
-  if(!A.call.incoming||d.callId!==A.call.id)return;
-  if(A.call.roomJoined&&A.call.roomCode){A.call.incoming=d;A.call.remoteRoomJoined=true;acceptIncomingCall();}
-  else {A.call.incoming=d;$('#callStatus').textContent='Digite o código da sala para entrar';}
-}
+function handleCallRoomJoined(d){if(!d?.callId||d.callId!==A.call.id||!A.call.roomJoined)return;if(String(d.roomCode||'').toUpperCase()!==A.call.roomCode)return;A.call.remoteRoomJoined=true;if(A.call.roomRole==='host')startLiveHost();else $('#callStatus').textContent='Sala confirmada. Aguardando áudio…'}
+function handleCallRoomError(d){if(!d?.callId||d.callId!==A.call.id)return;$('#callStatus').textContent=d.message||'Código da sala inválido';const input=$('#callRoomCode');if(input){input.disabled=false;input.focus()}const join=$('#callRoomJoin');if(join)join.disabled=false;A.call.roomJoined=false}
 function endCall(notifyPeer=false){
   const peer=A.call.peer,id=A.call.id;if(notifyPeer&&peer&&id)sendSignal(peer,{type:'call-end',callId:id});
-  try{A.call.pc?.close()}catch{}A.call.stream?.getTracks().forEach(t=>t.stop());const audio=$('#callRemoteAudio');if(audio)audio.srcObject=null;
-  A.call={pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[],roomCode:null,roomRole:null,roomJoined:false,remoteRoomJoined:false,roomName:null,roomPhoto:null};hideCallOverlay();
+  stopLiveAudio();A.call={pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[],roomCode:null,roomRole:null,roomJoined:false,remoteRoomJoined:false,roomName:null,roomPhoto:null,audioContext:null,source:null,processor:null,silentGain:null,playTime:0};hideCallOverlay();
 }
 function sendTyping(active){if(!A.active||window.__linkaWs?.readyState!==1)return;try{window.__linkaWs.send(JSON.stringify({type:'typing',to:A.active.id,active:!!active}))}catch{}}
 function showTyping(active,from){if(!A.active||String(A.active.id)!==String(from))return;const el=$('#chatPresence');if(!el)return;if(active){A.remoteTyping=true;el.innerHTML='<span class="typingDots"><i></i><i></i><i></i></span>'}else{A.remoteTyping=false;el.textContent=presenceText(A.active)}}
-function connect(){const proto=location.protocol==='https:'?'wss':'ws';const ws=new WebSocket(proto+'://'+location.host+'/?token='+encodeURIComponent(A.token));ws.onopen=()=>{try{ws.send(JSON.stringify({type:'ping'}))}catch{}};ws.onmessage=async e=>{const d=JSON.parse(e.data);if(d.type==='contact_added'){await loadContacts();renderList();toast('Novo contato adicionado')}if(d.type==='presence'){await loadContacts();refreshPresence()}if(d.type==='typing'){showTyping(!!d.active,d.from)}if(d.type==='call-room-invite'){handleCallRoomInvite(d)}if(d.type==='call-room-join'){handleCallRoomJoin(d)}if(d.type==='call-room-joined'){handleCallRoomJoined(d)}if(d.type==='call-room-error'){handleCallRoomError(d)}if(d.type==='call-offer'){handleIncomingOffer(d)}if(d.type==='call-answer'){handleCallAnswer(d)}if(d.type==='call-ice'){handleCallIce(d)}if(d.type==='call-reject'){toast('Chamada recusada');endCall(false)}if(d.type==='call-busy'){toast('Contato está em outra chamada');endCall(false)}if(d.type==='call-end'){toast('Chamada encerrada');endCall(false)}if(d.type==='notification'){A.notifications.unshift(d.notification);A.notifications=A.notifications.slice(0,100);updateNotifBell();if(d.notification.kind==='message'){toast('Nova mensagem de '+d.notification.title);notifyIncoming({from:d.notification.from,type:'text',text:d.notification.body})}else toast(d.notification.title);return}if(d.type==='message'){if(A.active&&String(d.message.from)===String(A.active.id)){showTyping(false,d.message.from);A.messages.push(d.message);drawMessages()}else{toast('Nova mensagem');notifyIncoming(d.message)}}};ws.onclose=()=>setTimeout(()=>A.token&&connect(),3000);window.__linkaWs=ws}
+function connect(){const proto=location.protocol==='https:'?'wss':'ws';const ws=new WebSocket(proto+'://'+location.host+'/?token='+encodeURIComponent(A.token));ws.onopen=()=>{try{ws.send(JSON.stringify({type:'ping'}))}catch{}};ws.onmessage=async e=>{if(typeof e.data!=='string')return;let d;try{d=JSON.parse(e.data)}catch{return}if(d.type==='contact_added'){await loadContacts();renderList();toast('Novo contato adicionado')}if(d.type==='presence'){await loadContacts();refreshPresence()}if(d.type==='typing'){showTyping(!!d.active,d.from)}if(d.type==='call-room-invite'){handleCallRoomInvite(d)}if(d.type==='call-live-start'){handleLiveStart(d)}if(d.type==='call-live-ready'){handleLiveReady(d)}if(d.type==='call-live-audio'){handleLiveAudio(d)}if(d.type==='call-room-join'){handleCallRoomJoin(d)}if(d.type==='call-room-joined'){handleCallRoomJoined(d)}if(d.type==='call-room-error'){handleCallRoomError(d)}if(d.type==='call-offer'){handleIncomingOffer(d)}if(d.type==='call-answer'){handleCallAnswer(d)}if(d.type==='call-ice'){handleCallIce(d)}if(d.type==='call-reject'){toast('Chamada recusada');endCall(false)}if(d.type==='call-busy'){toast('Contato está em outra chamada');endCall(false)}if(d.type==='call-end'){toast('Chamada encerrada');endCall(false)}if(d.type==='notification'){A.notifications.unshift(d.notification);A.notifications=A.notifications.slice(0,100);updateNotifBell();if(d.notification.kind==='message'){toast('Nova mensagem de '+d.notification.title);notifyIncoming({from:d.notification.from,type:'text',text:d.notification.body})}else toast(d.notification.title);return}if(d.type==='message'){if(A.active&&String(d.message.from)===String(A.active.id)){showTyping(false,d.message.from);A.messages.push(d.message);drawMessages()}else{toast('Nova mensagem');notifyIncoming(d.message)}}};ws.onclose=()=>setTimeout(()=>A.token&&connect(),3000);window.__linkaWs=ws}
 setInterval(async()=>{if(!A.token)return;try{await api('/api/ping',{method:'POST'});await loadContacts();refreshPresence()}catch{}if(window.__linkaWs?.readyState===1)try{window.__linkaWs.send(JSON.stringify({type:'ping'}))}catch{}},20000);
 start();

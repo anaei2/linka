@@ -1,0 +1,1 @@
+/* FCM service worker is served dynamically by the Linka server. */

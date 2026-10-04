@@ -1,1 +1,1 @@
-/* FCM service worker is served dynamically by the Linka server. */
+/* The server serves the configured Firebase Messaging service worker at this path. */

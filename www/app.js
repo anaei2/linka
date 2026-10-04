@@ -120,28 +120,125 @@ function setupPeer(peerId,callId){
     {urls:'turn:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'},
     {urls:'turns:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'}
   ];
-  const pc=new RTCPeerConnection({iceServers});
-  A.call.pc=pc;A.call.peer=peerId;A.call.id=callId;A.call.pendingCandidates=[];
-  pc.onicecandidate=e=>{if(e.candidate)sendSignal(peerId,{type:'call-ice',callId,candidate:e.candidate});};
-  pc.onicecandidateerror=e=>console.warn('WebRTC ICE error:',e.errorCode,e.errorText||'');
-  pc.ontrack=e=>{const a=$('#callRemoteAudio');if(a){a.srcObject=e.streams[0];a.play?.().catch(()=>{})}};
+  const pc=new RTCPeerConnection({iceServers,iceCandidatePoolSize:10,bundlePolicy:'max-bundle',rtcpMuxPolicy:'require'});
+  A.call.pc=pc;A.call.peer=peerId;A.call.id=callId;A.call.pendingCandidates=[];A.call.iceErrors=[];
+  pc.onicecandidate=e=>{
+    if(e.candidate){
+      const c=e.candidate.toJSON?e.candidate.toJSON():e.candidate;
+      sendSignal(peerId,{type:'call-ice',callId,candidate:c});
+    }
+  };
+  pc.onicecandidateerror=e=>{
+    console.warn('WebRTC ICE error:',e.errorCode,e.errorText||'',e.url||'');
+    A.call.iceErrors.push({code:e.errorCode,text:e.errorText||'',url:e.url||''});
+  };
+  pc.ontrack=e=>{
+    const a=$('#callRemoteAudio');
+    if(a){
+      a.srcObject=e.streams[0];
+      a.muted=false;
+      const play=a.play?.();
+      if(play&&play.catch)play.catch(err=>console.warn('Remote audio play:',err));
+    }
+  };
   pc.oniceconnectionstatechange=()=>{
     const st=pc.iceConnectionState;
-    if(st==='checking'){const el=$('#callStatus');if(el)el.textContent='Conectando…'}
-    if(st==='connected'||st==='completed'){const el=$('#callStatus');if(el)el.textContent='Conectado'}
-    if(st==='failed'){console.warn('WebRTC ICE falhou');const el=$('#callStatus');if(el)el.textContent='Não foi possível conectar';}
+    const el=$('#callStatus');
+    if(st==='checking'&&el)el.textContent='Conectando…';
+    if((st==='connected'||st==='completed')&&el)el.textContent='Conectado';
+    if(st==='failed'&&el)el.textContent='Falha na conexão';
   };
   pc.onconnectionstatechange=()=>{
-    if(pc.connectionState==='connected')$('#callStatus').textContent='Conectado';
-    if(pc.connectionState==='failed'){console.warn('WebRTC conexão falhou');$('#callStatus').textContent='Falha na conexão';}
+    const st=pc.connectionState;
+    const el=$('#callStatus');
+    if(st==='connecting'&&el)el.textContent='Conectando…';
+    if(st==='connected'&&el)el.textContent='Conectado';
+    if(st==='failed'&&el)el.textContent='Falha na conexão';
+    if(st==='disconnected'&&el)el.textContent='Reconectando…';
   };
-  return pc
+  return pc;
 }
-async function startOutgoingCall(contact){if(A.call.pc){toast('Você já está em uma chamada');return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});const callId=crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random();const pc=setupPeer(contact.id,callId);A.call.stream=stream;stream.getTracks().forEach(t=>pc.addTrack(t,stream));showCallOverlay(contact.name,contact.photo,'Chamando…',false);const offer=await pc.createOffer();await pc.setLocalDescription(offer);if(!sendSignal(contact.id,{type:'call-offer',callId,offer:{type:offer.type,sdp:offer.sdp}})){endCall(true);toast('Não foi possível iniciar a chamada')} }catch(e){console.error(e);endCall(true);toast('Não foi possível acessar o microfone. Verifique a permissão do navegador.')}}
-async function handleIncomingCall(d){if(A.call.pc){sendSignal(d.from,{type:'call-busy',callId:d.callId});return}A.call.incoming=d;A.call.earlyCandidates=A.call.earlyCandidates||[];const contact=A.contacts.find(x=>String(x.id)===String(d.from))||{};showCallOverlay(contact.name||'Contato',contact.photo,'Chamada recebida',true)}
-async function acceptIncomingCall(){const d=A.call.incoming;if(!d)return;try{const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});const pc=setupPeer(d.from,d.callId);A.call.stream=stream;stream.getTracks().forEach(t=>pc.addTrack(t,stream));await pc.setRemoteDescription(d.offer);const queued=[...(A.call.earlyCandidates||[]),...(A.call.pendingCandidates||[])];A.call.earlyCandidates=[];A.call.pendingCandidates=[];for(const c of queued)await pc.addIceCandidate(c).catch(()=>{});const answer=await pc.createAnswer();await pc.setLocalDescription(answer);sendSignal(d.from,{type:'call-answer',callId:d.callId,answer:{type:answer.type,sdp:answer.sdp}});A.call.incoming=null;$('#callAccept').hidden=true;$('#callDecline').hidden=true;$('#callEnd').hidden=false;$('#callStatus').textContent='Conectando…'}catch(e){console.error(e);toast('Não foi possível usar o microfone');sendSignal(d.from,{type:'call-reject',callId:d.callId});endCall(true)}}
-async function handleCallAnswer(d){if(!A.call.pc||d.callId!==A.call.id)return;try{await A.call.pc.setRemoteDescription(d.answer);for(const c of A.call.pendingCandidates.splice(0))await A.call.pc.addIceCandidate(c).catch(()=>{})}catch(e){console.error(e);endCall(true)}}
-async function handleCallIce(d){const c=new RTCIceCandidate(d.candidate);if(A.call.pc&&d.callId===A.call.id){if(A.call.pc.remoteDescription)await A.call.pc.addIceCandidate(c).catch(()=>{});else A.call.pendingCandidates.push(c);return}if(A.call.incoming&&d.callId===A.call.incoming.callId){A.call.earlyCandidates=A.call.earlyCandidates||[];A.call.earlyCandidates.push(c)}}
+function waitForIceGathering(pc,timeout=8000){
+  if(pc.iceGatheringState==='complete')return Promise.resolve();
+  return new Promise(resolve=>{
+    let done=false;
+    const finish=()=>{if(done)return;done=true;clearTimeout(timer);pc.removeEventListener('icegatheringstatechange',check);resolve()};
+    const check=()=>{if(pc.iceGatheringState==='complete')finish()};
+    const timer=setTimeout(finish,timeout);
+    pc.addEventListener('icegatheringstatechange',check);
+  });
+}
+async function startOutgoingCall(contact){
+  if(A.call.pc){toast('Você já está em uma chamada');return}
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
+    const callId=crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random();
+    const pc=setupPeer(contact.id,callId);
+    A.call.stream=stream;
+    stream.getTracks().forEach(t=>pc.addTrack(t,stream));
+    showCallOverlay(contact.name,contact.photo,'Conectando…',false);
+    const offer=await pc.createOffer({offerToReceiveAudio:true});
+    await pc.setLocalDescription(offer);
+    await waitForIceGathering(pc);
+    const local=pc.localDescription;
+    if(!local||!sendSignal(contact.id,{type:'call-offer',callId,offer:{type:local.type,sdp:local.sdp}})){
+      endCall(true);toast('Não foi possível iniciar a chamada');
+    }
+  }catch(e){
+    console.error(e);endCall(true);toast('Não foi possível acessar o microfone. Verifique a permissão do navegador.');
+  }
+}
+async function handleIncomingCall(d){
+  if(A.call.pc){sendSignal(d.from,{type:'call-busy',callId:d.callId});return}
+  A.call.incoming=d;A.call.earlyCandidates=A.call.earlyCandidates||[];
+  const contact=A.contacts.find(x=>String(x.id)===String(d.from))||{};
+  showCallOverlay(contact.name||'Contato',contact.photo,'Chamada recebida',true);
+}
+async function acceptIncomingCall(){
+  const d=A.call.incoming;if(!d)return;
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
+    const pc=setupPeer(d.from,d.callId);
+    A.call.stream=stream;
+    stream.getTracks().forEach(t=>pc.addTrack(t,stream));
+    await pc.setRemoteDescription(d.offer);
+    const queued=[...(A.call.earlyCandidates||[]),...(A.call.pendingCandidates||[])];
+    A.call.earlyCandidates=[];A.call.pendingCandidates=[];
+    for(const c of queued)await pc.addIceCandidate(c).catch(err=>console.warn('ICE queued:',err));
+    const answer=await pc.createAnswer({offerToReceiveAudio:true});
+    await pc.setLocalDescription(answer);
+    await waitForIceGathering(pc);
+    const local=pc.localDescription;
+    if(!local)throw new Error('Descrição local indisponível');
+    sendSignal(d.from,{type:'call-answer',callId:d.callId,answer:{type:local.type,sdp:local.sdp}});
+    A.call.incoming=null;$('#callAccept').hidden=true;$('#callDecline').hidden=true;$('#callEnd').hidden=false;$('#callStatus').textContent='Conectando…';
+  }catch(e){
+    console.error(e);toast('Não foi possível conectar a chamada');
+    if(d?.from)sendSignal(d.from,{type:'call-reject',callId:d.callId});
+    endCall(true);
+  }
+}
+async function handleCallAnswer(d){
+  if(!A.call.pc||d.callId!==A.call.id)return;
+  try{
+    await A.call.pc.setRemoteDescription(d.answer);
+    for(const c of A.call.pendingCandidates.splice(0))await A.call.pc.addIceCandidate(c).catch(err=>console.warn('ICE answer:',err));
+  }catch(e){console.error(e);endCall(true)}
+}
+async function handleCallIce(d){
+  if(!d?.candidate||!d.callId)return;
+  let c;
+  try{c=new RTCIceCandidate(d.candidate)}catch(e){console.warn('ICE inválido:',e);return}
+  if(A.call.pc&&d.callId===A.call.id){
+    if(A.call.pc.remoteDescription)await A.call.pc.addIceCandidate(c).catch(err=>console.warn('ICE add:',err));
+    else A.call.pendingCandidates.push(c);
+    return;
+  }
+  if(A.call.incoming&&d.callId===A.call.incoming.callId){
+    A.call.earlyCandidates=A.call.earlyCandidates||[];
+    A.call.earlyCandidates.push(c);
+  }
+}
 function endCall(notifyPeer=false){const peer=A.call.peer,id=A.call.id;if(notifyPeer&&peer&&id)sendSignal(peer,{type:'call-end',callId:id});try{A.call.pc?.close()}catch{}A.call.stream?.getTracks().forEach(t=>t.stop());const a=$('#callRemoteAudio');if(a)a.srcObject=null;A.call={pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[]};hideCallOverlay()}
 function sendTyping(active){if(!A.active||window.__linkaWs?.readyState!==1)return;try{window.__linkaWs.send(JSON.stringify({type:'typing',to:A.active.id,active:!!active}))}catch{}}
 function showTyping(active,from){if(!A.active||String(A.active.id)!==String(from))return;const el=$('#chatPresence');if(!el)return;if(active){A.remoteTyping=true;el.innerHTML='<span class="typingDots"><i></i><i></i><i></i></span>'}else{A.remoteTyping=false;el.textContent=presenceText(A.active)}}

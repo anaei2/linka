@@ -35,3 +35,7 @@ A chamada agora usa uma sala de conexão: os dois participantes digitam o mesmo 
 
 ## Chamadas de voz
 As chamadas usam o WebSocket seguro do próprio Linka para transportar áudio PCM em tempo real, além do código de sala. Isso evita depender de STUN/TURN e funciona na mesma conexão WSS usada pelo aplicativo.
+
+
+## Chamada de vídeo
+A versão inclui chamada de vídeo com WebRTC para vídeo e a transmissão de áudio já existente do Linka. A sinalização passa pelo WebSocket do próprio servidor e há STUN/TURN de fallback.

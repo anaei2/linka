@@ -1,0 +1,17 @@
+LINKA — NOTIFICAÇÕES AUTOMÁTICAS
+
+Este pacote é o projeto completo, pronto para substituir a pasta atual do Linka.
+
+IMPORTANTE:
+- O fluxo de notificações automáticas de mensagens deste projeto usa Firebase Cloud Messaging (FCM).
+- O server.js já salva o token FCM e envia uma notificação quando uma nova mensagem é criada.
+- O teste feito no painel do OneSignal não é o mesmo fluxo do FCM. Não é necessário remover o FCM.
+
+PARA USAR:
+1. Faça backup do projeto atual.
+2. Substitua os arquivos do projeto pelos arquivos deste ZIP.
+3. Mantenha/configure as variáveis de ambiente do servidor, especialmente as do Firebase/FCM e Supabase.
+4. Publique/reinicie o servidor.
+5. Teste com dois usuários: A envia uma mensagem para B e B deve receber a notificação.
+
+Não coloque chaves privadas do Firebase dentro do código ou deste ZIP. Elas devem continuar nas variáveis de ambiente do servidor.

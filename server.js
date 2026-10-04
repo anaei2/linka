@@ -126,7 +126,8 @@ async function pushUser(uid,payload){
     notification:{title:String(payload.title||'Linka'),body:String(payload.body||'')},
     data:Object.fromEntries(Object.entries(payload.data||{}).map(([k,v])=>[String(k),String(v)])),
     webpush:{
-      notification:{icon:payload.icon||'/icon-192.png',badge:payload.badge||'/icon-192.png',tag:payload.tag||'linka'},
+      headers:{Urgency:payload.data?.type==='call'?'high':'normal'},
+      notification:{icon:payload.icon||'/icon-192.png',badge:payload.badge||'/icon-192.png',tag:payload.tag||'linka',renotify:true,requireInteraction:payload.data?.type==='call'},
       fcmOptions:{link:payload.data?.chatId?`/?chat=${encodeURIComponent(payload.data.chatId)}`:'/'}
     }
   };
@@ -154,6 +155,7 @@ app.get('/api/users/:id',auth,(req,res)=>{const u=db.users.find(x=>x.id===req.pa
 app.post('/api/contacts/:id',auth,(req,res)=>{const other=db.users.find(u=>u.id===req.params.id);if(!other||other.id===req.user.id)return res.status(404).json({error:'Usuário não encontrado.'});db.contacts[req.user.id]??=[];if(!db.contacts[req.user.id].includes(other.id))db.contacts[req.user.id].push(other.id);save();const note=addNotification(other.id,{kind:'contact',title:'Novo contato',body:(req.user.name||'Alguém')+' adicionou você aos contatos.',from:req.user.id});sendUser(other.id,{type:'contact_added',by:safe(req.user)});pushUser(other.id,{title:note.title,body:note.body,icon:'/icon-192.png',badge:'/icon-192.png',data:{notificationId:note.id}}).catch(()=>{});res.json({user:safe(other)});});
 app.delete('/api/contacts/:id',auth,(req,res)=>{db.contacts[req.user.id]=(db.contacts[req.user.id]||[]).filter(x=>x!==req.params.id);save();res.json({ok:true})});
 app.get('/api/firebase-config',(req,res)=>{const c=firebaseConfig();if(!c.apiKey||!c.projectId||!c.messagingSenderId||!c.appId||!process.env.FIREBASE_VAPID_KEY)return res.status(503).json({error:'Firebase FCM ainda não está configurado no servidor.'});res.json({...c,vapidKey:process.env.FIREBASE_VAPID_KEY});});
+app.get('/api/fcm/status',auth,(req,res)=>res.json({registered:(db.fcmTokens[req.user.id]||[]).length>0, firebase:firebaseReady}));
 app.post('/api/fcm/token',auth,(req,res)=>{const token=String(req.body?.token||'').trim();if(!token||token.length<20)return res.status(400).json({error:'Token FCM inválido.'});db.fcmTokens[req.user.id]??=[];const list=db.fcmTokens[req.user.id];if(!list.includes(token))list.push(token);db.fcmTokens[req.user.id]=list.slice(-10);save();res.json({ok:true});});
 app.delete('/api/fcm/token',auth,(req,res)=>{const token=String(req.body?.token||'').trim();if(token)db.fcmTokens[req.user.id]=(db.fcmTokens[req.user.id]||[]).filter(t=>t!==token);save();res.json({ok:true})});
 app.get('/api/calls/pending',auth,(req,res)=>{const list=pendingCalls.get(req.user.id)||[];res.json(list);});

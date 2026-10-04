@@ -43,3 +43,6 @@ A versão inclui chamada de vídeo com WebRTC para vídeo e a transmissão de á
 
 ## Notificações de mensagens e chamadas
 O servidor envia notificações FCM para novas mensagens e chamadas recebidas. Chamadas pendentes são reenviadas quando o Linka reconecta.
+
+
+FCM: o navegador registra automaticamente o token após a primeira interação. Mensagens e chamadas usam push quando o Linka está em segundo plano/fechado.

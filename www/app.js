@@ -109,14 +109,6 @@ async function initNotifications(){
 
 function modal(html){$('#modal').innerHTML=`<div class="modal"><div class="card">${html}</div></div>`;document.querySelector('[data-close]')?.addEventListener('click',()=>$('#modal').innerHTML='')}
 function sendTyping(active){if(!A.active||window.__linkaWs?.readyState!==1)return;try{window.__linkaWs.send(JSON.stringify({type:'typing',to:A.active.id,active:!!active}))}catch{}}
-function notifyIncoming(m){
-  if(!('Notification' in window)||Notification.permission!=='granted')return;
-  const title=m?.type==='audio'?'Áudio recebido':(m?.from?'Nova mensagem':'Linka');
-  const body=m?.type==='audio'?'Você recebeu um áudio':String(m?.text||'Nova mensagem');
-  if(document.visibilityState==='visible')return;
-  try{new Notification(title,{body,icon:'/icon-192.png',tag:'linka-incoming'})}catch{}
-}
-
 function showTyping(active,from){if(!A.active||String(A.active.id)!==String(from))return;const el=$('#chatPresence');if(!el)return;if(active){A.remoteTyping=true;el.innerHTML='<span class="typingDots"><i></i><i></i><i></i></span>'}else{A.remoteTyping=false;el.textContent=presenceText(A.active)}}
 function connect(){const proto=location.protocol==='https:'?'wss':'ws';const ws=new WebSocket(proto+'://'+location.host+'/?token='+encodeURIComponent(A.token));ws.onopen=()=>{try{ws.send(JSON.stringify({type:'ping'}))}catch{}};ws.onmessage=async e=>{const d=JSON.parse(e.data);if(d.type==='contact_added'){await loadContacts();renderList();toast('Novo contato adicionado')}if(d.type==='presence'){await loadContacts();refreshPresence()}if(d.type==='typing'){showTyping(!!d.active,d.from)}if(d.type==='notification'){A.notifications.unshift(d.notification);A.notifications=A.notifications.slice(0,100);updateNotifBell();if(d.notification.kind==='message'){toast('Nova mensagem de '+d.notification.title);notifyIncoming({from:d.notification.from,type:'text',text:d.notification.body})}else toast(d.notification.title);return}if(d.type==='message'){if(A.active&&String(d.message.from)===String(A.active.id)){showTyping(false,d.message.from);A.messages.push(d.message);drawMessages()}else{toast('Nova mensagem');notifyIncoming(d.message)}}};ws.onclose=()=>setTimeout(()=>A.token&&connect(),3000);window.__linkaWs=ws}
 setInterval(async()=>{if(!A.token)return;try{await api('/api/ping',{method:'POST'});await loadContacts();refreshPresence()}catch{}if(window.__linkaWs?.readyState===1)try{window.__linkaWs.send(JSON.stringify({type:'ping'}))}catch{}},20000);

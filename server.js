@@ -4,11 +4,35 @@ const app=express(); const server=http.createServer(app); const wss=new WebSocke
 const PORT=process.env.PORT||3000;
 const DATA_DIR=process.env.DATA_DIR||path.join(__dirname);
 const DATA=path.join(DATA_DIR,'data.json'), BACKUP=path.join(DATA_DIR,'data.json.bak');
+const MEDIA_DIR=path.join(DATA_DIR,'media');
+try{fs.mkdirSync(MEDIA_DIR,{recursive:true})}catch(e){console.error('Não foi possível criar MEDIA_DIR:',e)}
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/$/,'');
 const SUPABASE_KEY=String(process.env.SUPABASE_SERVICE_ROLE_KEY||'');
 const REMOTE_ENABLED=!!(SUPABASE_URL&&SUPABASE_KEY);
 try{fs.mkdirSync(DATA_DIR,{recursive:true})}catch(e){console.error('Não foi possível criar DATA_DIR:',e)}
 
+// Upload binário de mídia: evita transformar vídeos em base64/JSON e deixa o envio bem mais rápido.
+app.post('/api/messages/:id/media',express.raw({type:'application/octet-stream',limit:'30mb'}),auth,(req,res)=>{
+  const other=String(req.params.id);
+  if(!db.users.some(u=>String(u.id)===other))return res.status(404).json({error:'Usuário não encontrado.'});
+  if((db.blocked[req.user.id]||[]).includes(other)||(db.blocked[other]||[]).includes(req.user.id))return res.status(403).json({error:'Este contato está bloqueado.'});
+  const type=String(req.headers['x-media-type']||'');
+  if(!/^(image\/|video\/)/.test(type))return res.status(400).json({error:'Tipo de mídia inválido.'});
+  const body=Buffer.isBuffer(req.body)?req.body:Buffer.alloc(0);
+  if(!body.length||body.length>22*1024*1024)return res.status(400).json({error:'Foto ou vídeo inválido ou muito grande.'});
+  const mid=id(),ext=(type.split('/')[1]||'bin').replace(/[^a-z0-9.+-]/gi,'').slice(0,10)||'bin';
+  const filename=mid+'.'+ext;
+  try{fs.writeFileSync(path.join(MEDIA_DIR,filename),body)}catch(e){return res.status(500).json({error:'Não foi possível salvar a mídia.'})}
+  const u=db.users.find(x=>x.id===other);
+  const m={id:mid,from:req.user.id,to:other,type:'media',mediaFile:filename,mediaType:type,createdAt:Date.now(),status:'sent'};
+  const k=pair(req.user.id,other);db.messages[k]??=[];db.messages[k].push(m);db.messages[k]=db.messages[k].slice(-500);save();
+  const delivered=sendUser(other,{type:'message',message:clientMessage(m)});
+  if(delivered>0){m.status='delivered';m.deliveredAt=Date.now();save();sendUser(req.user.id,{type:'message_status',messageId:m.id,message:clientMessage(m),status:'delivered'})}
+  const preview=type.startsWith('video/')?'Vídeo recebido':'Foto recebida';
+  const note=addNotification(other,{kind:'message',title:req.user.name||'Nova mensagem',body:preview,from:req.user.id,chatId:req.user.id});
+  pushUser(other,{title:note.title,body:note.body,icon:'/icon-192.png',badge:'/icon-192.png',data:{chatId:req.user.id,notificationId:note.id}}).catch(()=>{});
+  res.json(clientMessage(m));
+});
 app.use(express.json({limit:'12mb'}));
 app.get('/firebase-messaging-sw.js',(req,res)=>{
   const c=firebaseConfig();
@@ -170,13 +194,12 @@ app.get('/api/statuses',auth,(req,res)=>{
     raw=raw.filter(st=>st && now-Number(st.createdAt||0)<=86400000);
     db.statuses[uid]=raw;
     for(const st of raw){
-      st.id=st.id||String(st.createdAt||Date.now())+'-'+Math.random().toString(36).slice(2,8);
+      st.id=st.id||String(st.createdAt||'status-'+uid);
       st.likes=Array.isArray(st.likes)?st.likes:[]; st.views=Array.isArray(st.views)?st.views:[];
       const isMine=String(uid)===String(req.user.id);
-      list.push({statusId:st.id,user:safe(u),text:st.text||'',media:st.media||'',mediaType:st.mediaType||'',createdAt:st.createdAt,likeCount:st.likes.length,likedByMe:st.likes.some(x=>String(x)===String(req.user.id)),viewedByMe:!isMine&&st.views.some(v=>String(v.userId)===String(req.user.id)),viewCount:isMine?st.views.length:undefined});
+      list.push({statusId:st.id,user:safe(u),text:st.text||'',mediaUrl:(st.media||st.mediaFile)?('/api/status-media/'+encodeURIComponent(uid)+'/'+encodeURIComponent(st.id)):'' ,mediaType:st.mediaType||'',createdAt:st.createdAt,likeCount:st.likes.length,likedByMe:st.likes.some(x=>String(x)===String(req.user.id)),viewedByMe:!isMine&&st.views.some(v=>String(v.userId)===String(req.user.id)),viewCount:isMine?st.views.length:undefined});
     }
   }
-  save();
   list.sort((a,b)=>Number(a.createdAt)-Number(b.createdAt));
   res.json(list);
 });
@@ -191,6 +214,12 @@ app.post('/api/statuses',auth,(req,res)=>{
 function findStatus(owner,statusId){
   const raw=db.statuses[owner]; const arr=Array.isArray(raw)?raw:(raw?[raw]:[]); return arr.find(st=>String(st.id||st.createdAt)===String(statusId))||null;
 }
+app.get('/api/status-media/:owner/:statusId',auth,(req,res)=>{
+  const owner=String(req.params.owner),sid=String(req.params.statusId);
+  const ids=db.contacts[req.user.id]||[]; if(owner!==String(req.user.id)&&!ids.map(String).includes(owner))return res.status(403).end();
+  const st=findStatus(owner,sid); if(!st||Date.now()-Number(st.createdAt||0)>86400000||(!st.media&&!st.mediaFile))return res.status(404).end();
+  try{let buf,type=String(st.mediaType||'application/octet-stream');if(st.mediaFile)buf=fs.readFileSync(path.join(MEDIA_DIR,path.basename(st.mediaFile)));else{const parts=String(st.media).match(/^data:([^;]+);base64,(.*)$/s);if(!parts)return res.status(404).end();type=parts[1];buf=Buffer.from(parts[2],'base64')}res.setHeader('Content-Type',type);res.setHeader('Content-Length',String(buf.length));res.setHeader('Cache-Control','private, max-age=3600');res.end(buf)}catch{res.status(404).end()}
+});
 app.post('/api/statuses/:owner/:statusId/like',auth,(req,res)=>{const owner=String(req.params.owner),statusId=String(req.params.statusId);if(owner===String(req.user.id))return res.status(400).json({error:'Você não pode curtir seu próprio status.'});const ids=db.contacts[req.user.id]||[];if(!ids.map(String).includes(owner))return res.status(403).json({error:'Você precisa ter este contato para curtir o status.'});const st=findStatus(owner,statusId),u=db.users.find(x=>String(x.id)===owner);if(!st||!u||Date.now()-Number(st.createdAt||0)>86400000)return res.status(404).json({error:'Status não encontrado.'});st.likes=Array.isArray(st.likes)?st.likes:[];const i=st.likes.findIndex(x=>String(x)===String(req.user.id));const liked=i<0;if(liked)st.likes.push(req.user.id);else st.likes.splice(i,1);save();if(liked){const note=addNotification(owner,{kind:'status_like',title:'Curtida no seu status',body:(req.user.name||'Alguém')+' curtiu seu status.',from:req.user.id});pushUser(owner,{title:note.title,body:note.body,icon:'/icon-192.png',badge:'/icon-192.png',data:{notificationId:note.id,statusUserId:owner,statusId}}).catch(()=>{});}sendUser(owner,{type:'status_like',statusUserId:owner,statusId,from:req.user.id,liked});res.json({ok:true,liked,likeCount:st.likes.length});});
 app.post('/api/statuses/:owner/:statusId/view',auth,(req,res)=>{const owner=String(req.params.owner),statusId=String(req.params.statusId);if(owner===String(req.user.id))return res.json({ok:true,viewed:false});const ids=db.contacts[req.user.id]||[];if(!ids.map(String).includes(owner))return res.status(403).json({error:'Você precisa ter este contato para ver o status.'});const st=findStatus(owner,statusId),u=db.users.find(x=>String(x.id)===owner);if(!st||!u||Date.now()-Number(st.createdAt||0)>86400000)return res.status(404).json({error:'Status não encontrado.'});st.views=Array.isArray(st.views)?st.views:[];if(!st.views.some(v=>String(v.userId)===String(req.user.id))){st.views.push({userId:req.user.id,viewedAt:Date.now()});save();}res.json({ok:true,viewCount:st.views.length});});
 app.get('/api/statuses/:owner/:statusId/views',auth,(req,res)=>{const owner=String(req.params.owner),statusId=String(req.params.statusId);if(owner!==String(req.user.id))return res.status(403).json({error:'Somente o dono do status pode ver as visualizações.'});const st=findStatus(owner,statusId);if(!st||Date.now()-Number(st.createdAt||0)>86400000)return res.status(404).json({error:'Status não encontrado.'});st.views=Array.isArray(st.views)?st.views:[];const viewers=st.views.map(v=>db.users.find(u=>String(u.id)===String(v.userId))).filter(Boolean).map(u=>safe(u));res.json({count:viewers.length,viewers});});
@@ -237,9 +266,10 @@ app.delete('/api/calls/:id',auth,(req,res)=>{const other=req.params.id;if(!db.us
 function clientMessage(m){
   if(!m)return m;
   const out={...m};
-  if(out.type==='media' && out.media){
+  if(out.type==='media' && (out.media || out.mediaFile)){
     out.mediaUrl='/api/media/'+encodeURIComponent(out.id);
     delete out.media;
+    delete out.mediaFile;
   }
   return out;
 }
@@ -249,14 +279,16 @@ app.get('/api/media/:messageId',(req,res,next)=>{const qt=String(req.query?.toke
   for(const list of Object.values(db.messages)){
     if(Array.isArray(list)){ const m=list.find(x=>String(x.id)===mid); if(m){found=m;break;} }
   }
-  if(!found || found.type!=='media' || !found.media) return res.status(404).end();
-  const parts=String(found.media).match(/^data:([^;]+);base64,(.*)$/s);
-  if(!parts) return res.status(404).end();
+  if(!found || found.type!=='media' || (!found.media && !found.mediaFile)) return res.status(404).end();
   const pairKey=pair(found.from,found.to);
   const allowed=(String(req.user.id)===String(found.from)||String(req.user.id)===String(found.to));
   if(!allowed) return res.status(403).end();
-  let buf; try{buf=Buffer.from(parts[2],'base64')}catch{return res.status(404).end()}
-  res.setHeader('Content-Type',parts[1]);
+  let buf,contentType=String(found.mediaType||'application/octet-stream');
+  try{
+    if(found.mediaFile){buf=fs.readFileSync(path.join(MEDIA_DIR,path.basename(found.mediaFile)))}
+    else {const parts=String(found.media).match(/^data:([^;]+);base64,(.*)$/s);if(!parts)return res.status(404).end();contentType=parts[1];buf=Buffer.from(parts[2],'base64')}
+  }catch{return res.status(404).end()}
+  res.setHeader('Content-Type',contentType);
   res.setHeader('Content-Length',String(buf.length));
   res.setHeader('Cache-Control','private, max-age=86400');
   res.end(buf);
@@ -265,7 +297,7 @@ app.get('/api/messages/:id',auth,(req,res)=>{const other=req.params.id;if(!db.us
 app.post('/api/messages/:id/read',auth,(req,res)=>{const other=String(req.params.id);if(!db.users.some(u=>String(u.id)===other))return res.status(404).json({error:'Usuário não encontrado.'});const list=db.messages[pair(req.user.id,other)]||[];let changed=false;for(const m of list){if(String(m.to)===String(req.user.id)&&m.status!=='read'){m.status='read';m.readAt=Date.now();changed=true;sendUser(String(m.from),{type:'message_status',messageId:m.id,message:clientMessage(m),status:'read'});}}if(changed)save();res.json({ok:true})});
 app.post('/api/messages/:id',auth,(req,res)=>{const other=req.params.id;if((db.blocked[req.user.id]||[]).includes(other)||(db.blocked[other]||[]).includes(req.user.id))return res.status(403).json({error:'Este contato está bloqueado.'});const u=db.users.find(x=>x.id===other);if(!u)return res.status(404).json({error:'Usuário não encontrado.'});let m;if(req.body?.type==='audio'){const audio=String(req.body?.audio||'');if(!/^data:audio\/[A-Za-z0-9.+-]+(?:;[^,]*)?;base64,[A-Za-z0-9+/=]+$/.test(audio)||audio.length>10*1024*1024)return res.status(400).json({error:'Áudio inválido ou muito grande.'});const duration=Math.max(1,Math.min(90,Number(req.body?.duration)||1));m={id:id(),from:req.user.id,to:other,type:'audio',audio,duration,createdAt:Date.now()};}else if(req.body?.type==='media'){const media=String(req.body?.media||''),mediaType=String(req.body?.mediaType||'');if(!/^(image\/|video\/)/.test(mediaType)||!new RegExp('^data:'+mediaType.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'(?:;[^,]*)?;base64,[A-Za-z0-9+/=]+$').test(media)||media.length>14*1024*1024)return res.status(400).json({error:'Foto ou vídeo inválido ou muito grande.'});m={id:id(),from:req.user.id,to:other,type:'media',media,mediaType,createdAt:Date.now()};}else{const text=String(req.body?.text||'').trim();if(!text||text.length>4000)return res.status(400).json({error:'Mensagem inválida.'});m={id:id(),from:req.user.id,to:other,type:'text',text,createdAt:Date.now()};}const k=pair(req.user.id,other);m.status='sent';db.messages[k]??=[];db.messages[k].push(m);db.messages[k]=db.messages[k].slice(-500);save();const delivered=sendUser(other,{type:'message',message:clientMessage(m)});if(delivered>0){m.status='delivered';m.deliveredAt=Date.now();save();sendUser(req.user.id,{type:'message_status',messageId:m.id,message:clientMessage(m),status:'delivered'});}const preview=m.type==='audio'?'Áudio recebido':m.type==='media'?(String(m.mediaType).startsWith('video/')?'Vídeo recebido':'Foto recebida'):m.text;const note=addNotification(other.id,{kind:'message',title:req.user.name||'Nova mensagem',body:preview,from:req.user.id,chatId:req.user.id});pushUser(other,{title:note.title,body:note.body,icon:'/icon-192.png',badge:'/icon-192.png',data:{chatId:req.user.id,notificationId:note.id}}).catch(()=>{});res.json(m);});
 app.get(/.*/,(req,res)=>res.sendFile(path.join(__dirname,'www','index.html')));
-wss.on('connection',(ws,req)=>{const token=new URL(req.url,'http://localhost').searchParams.get('token');const uid=sessions.get(token)||db.sessions[token];if(uid)sessions.set(token,uid);if(!uid){ws.close();return}ws.token=token;touch(uid);ws.on('message',buf=>{try{const d=JSON.parse(buf);if(d.type==='ping'){offlinePresence.delete(token);touch(uid);sendUser(uid,{type:'presence',id:uid})}if(d.type==='presence-offline'){offlinePresence.add(token);touch(uid);sendUser(uid,{type:'presence',id:uid})}if(d.type==='presence-online'){offlinePresence.delete(token);touch(uid);sendUser(uid,{type:'presence',id:uid})};if(d.type==='typing'&&d.to)sendUser(d.to,{type:'typing',from:uid,active:!!d.active});if(d.type==='call-room-invite'&&d.to){createCallRecord(uid,d.to,d.callId,d.mode);const item={...d,from:uid,createdAt:Date.now()};pendingCalls.set(d.to,[...(pendingCalls.get(d.to)||[]).filter(x=>x.callId!==d.callId),item].slice(-5));sendUser(d.to,item);const caller=db.users.find(u=>u.id===uid);pushUser(d.to,{title:d.mode==='video'?'Chamada de vídeo':'Chamada recebida',body:`${caller?.name||'Um contato'} está ligando para você`,icon:'/icon-192.png',badge:'/icon-192.png',tag:`linka-call-${d.callId}`,data:{type:'call',callId:d.callId,from:uid,mode:d.mode||'audio'}}).catch(()=>{});}if(d.type==='call-live-ready'&&d.to){updateCallRecord(d.callId,{status:'connected',connectedAt:Date.now()});sendUser(d.to,{...d,from:uid});}if(d.type==='call-reject'&&d.to){updateCallRecord(d.callId,{status:'rejected',endedAt:Date.now(),duration:0});pendingCalls.set(uid,(pendingCalls.get(uid)||[]).filter(x=>x.callId!==d.callId));pendingCalls.set(d.to,(pendingCalls.get(d.to)||[]).filter(x=>x.callId!==d.callId));sendUser(d.to,{...d,from:uid});}if(d.type==='call-busy'&&d.to){updateCallRecord(d.callId,{status:'busy',endedAt:Date.now(),duration:0});pendingCalls.set(uid,(pendingCalls.get(uid)||[]).filter(x=>x.callId!==d.callId));pendingCalls.set(d.to,(pendingCalls.get(d.to)||[]).filter(x=>x.callId!==d.callId));sendUser(d.to,{...d,from:uid});}if(d.type==='call-end'&&d.to){pendingCalls.set(uid,(pendingCalls.get(uid)||[]).filter(x=>x.callId!==d.callId));pendingCalls.set(d.to,(pendingCalls.get(d.to)||[]).filter(x=>x.callId!==d.callId));const now=Date.now();const all=[];for(const arr of Object.values(db.callHistory))for(const c of arr)if(c.id===d.callId)all.push(c);const base=all.find(c=>c.connectedAt)||all[0];const duration=base?.connectedAt?Math.max(0,Math.floor((now-base.connectedAt)/1000)):0;updateCallRecord(d.callId,{status:'ended',endedAt:now,duration});sendUser(d.to,{...d,from:uid});}if(['call-room-join','call-room-joined','call-room-error','call-live-start','call-live-audio','call-video-ready','call-video-offer','call-video-answer','call-video-ice'].includes(d.type)&&d.to)sendUser(d.to,{...d,from:uid})}catch{}});ws.on('close',()=>{offlinePresence.delete(token);touch(uid);sendUser(uid,{type:'presence',id:uid})});sendUser(uid,{type:'presence',id:uid});for(const call of (pendingCalls.get(uid)||[]))sendUser(uid,call)});
+wss.on('connection',(ws,req)=>{const token=new URL(req.url,'http://localhost').searchParams.get('token');const uid=sessions.get(token)||db.sessions[token];if(uid)sessions.set(token,uid);if(!uid){ws.close();return}ws.token=token;touch(uid);ws.on('message',buf=>{try{const d=JSON.parse(buf);if(d.type==='ping'){offlinePresence.delete(token);touch(uid);sendUser(uid,{type:'presence',id:uid})}if(d.type==='presence-offline'){offlinePresence.add(token);touch(uid);sendUser(uid,{type:'presence',id:uid})}if(d.type==='presence-online'){offlinePresence.delete(token);touch(uid);sendUser(uid,{type:'presence',id:uid})};if(d.type==='typing'&&d.to)sendUser(d.to,{type:'typing',from:uid,active:!!d.active});if(d.type==='call-room-invite'&&d.to){createCallRecord(uid,d.to,d.callId,d.mode);const item={...d,from:uid,createdAt:Date.now()};pendingCalls.set(d.to,[...(pendingCalls.get(d.to)||[]).filter(x=>x.callId!==d.callId),item].slice(-5));sendUser(d.to,item);const caller=db.users.find(u=>u.id===uid);pushUser(d.to,{title:d.mode==='video'?'Chamada de vídeo':'Chamada recebida',body:`${caller?.name||'Um contato'} está ligando para você`,icon:'/icon-192.png',badge:'/icon-192.png',tag:`linka-call-${d.callId}`,data:{type:'call',callId:d.callId,from:uid,mode:d.mode||'audio'}}).catch(()=>{});}if(d.type==='call-live-ready'&&d.to){updateCallRecord(d.callId,{status:'connected',connectedAt:Date.now()});sendUser(d.to,{...d,from:uid});}if(d.type==='call-reject'&&d.to){updateCallRecord(d.callId,{status:'rejected',endedAt:Date.now(),duration:0});pendingCalls.set(uid,(pendingCalls.get(uid)||[]).filter(x=>x.callId!==d.callId));pendingCalls.set(d.to,(pendingCalls.get(d.to)||[]).filter(x=>x.callId!==d.callId));sendUser(d.to,{...d,from:uid});}if(d.type==='call-busy'&&d.to){updateCallRecord(d.callId,{status:'busy',endedAt:Date.now(),duration:0});pendingCalls.set(uid,(pendingCalls.get(uid)||[]).filter(x=>x.callId!==d.callId));pendingCalls.set(d.to,(pendingCalls.get(d.to)||[]).filter(x=>x.callId!==d.callId));sendUser(d.to,{...d,from:uid});}if(d.type==='call-end'&&d.to){pendingCalls.set(uid,(pendingCalls.get(uid)||[]).filter(x=>x.callId!==d.callId));pendingCalls.set(d.to,(pendingCalls.get(d.to)||[]).filter(x=>x.callId!==d.callId));const now=Date.now();const all=[];for(const arr of Object.values(db.callHistory))for(const c of arr)if(c.id===d.callId)all.push(c);const base=all.find(c=>c.connectedAt)||all[0];const duration=base?.connectedAt?Math.max(0,Math.floor((now-base.connectedAt)/1000)):0;updateCallRecord(d.callId,{status:'ended',endedAt:now,duration});const pairKey=pair(uid,d.to);db.messages[pairKey]??=[];const mode=d.mode==='video'?'video':'audio';const callMsg={id:id(),from:uid,to:d.to,type:'call',mode,status:'ended',duration,createdAt:now};db.messages[pairKey].push(callMsg);db.messages[pairKey]=db.messages[pairKey].slice(-500);save();sendUser(d.to,{...d,from:uid,callMessage:callMsg});sendUser(uid,{type:'call-end',from:d.to,to:uid,callId:d.callId,callMessage:callMsg});}if(['call-room-join','call-room-joined','call-room-error','call-live-start','call-live-audio','call-video-ready','call-video-offer','call-video-answer','call-video-ice'].includes(d.type)&&d.to)sendUser(d.to,{...d,from:uid})}catch{}});ws.on('close',()=>{offlinePresence.delete(token);touch(uid);sendUser(uid,{type:'presence',id:uid})});sendUser(uid,{type:'presence',id:uid});for(const call of (pendingCalls.get(uid)||[]))sendUser(uid,call)});
 
 async function boot(){
   const remote=await loadRemote();

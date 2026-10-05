@@ -117,3 +117,4 @@
 .editBar button{width:34px;height:34px;border:0;border-radius:50%;background:transparent;color:inherit;font-size:25px;line-height:1;cursor:pointer}
 .editBar[hidden]{display:none}
 .composer.editing{border-top-color:#00a884}
+.chatMore{border:0;background:transparent;color:#dce4e7;font-size:30px;line-height:1;width:38px;height:44px;border-radius:50%;cursor:pointer;display:grid;place-items:center}.chatMore:active{background:#ffffff12}

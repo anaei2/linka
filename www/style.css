@@ -41,3 +41,5 @@
   .tabs .tab{height:54px}
   .list{padding-bottom:0}
 }
+
+.statusCaption{margin:10px 0;padding:10px 12px;border-radius:12px;background:rgba(255,255,255,.06);text-align:left;line-height:1.4;white-space:pre-wrap}.statusCaptionLabel{display:block;font-weight:600}.statusCaptionLabel textarea{margin-top:6px}

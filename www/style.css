@@ -129,3 +129,13 @@
 .mediaBubble img.chatMedia{width:auto!important;height:auto!important;}
 .mediaBubble video.chatMedia{width:auto!important;height:auto!important;max-width:100%!important;max-height:65vh!important;}
 .mediaBubble time{display:block!important;clear:both;}
+/* Linka v24 - mídia de conversa: renderização completa estilo WhatsApp */
+.mediaBubble{display:flex!important;flex-direction:column!important;align-items:stretch!important;width:min(78vw,430px)!important;max-width:min(78vw,430px)!important;min-height:48px!important;height:auto!important;padding:4px!important;box-sizing:border-box!important;overflow:hidden!important}
+.mediaBubble .mediaLoading{display:grid;place-items:center;min-height:48px;color:#aebac1;font-size:12px;background:#111b21;border-radius:9px}
+.mediaBubble .chatMedia{display:block!important;width:100%!important;height:auto!important;max-width:100%!important;max-height:72vh!important;min-width:0!important;min-height:0!important;object-fit:contain!important;border-radius:9px!important;background:#111b21}
+.mediaBubble video.chatMedia{height:auto!important;max-height:72vh!important}
+.mediaBubble.mediaLoaded .mediaLoading{display:none}
+.mediaBubble.mediaError .mediaLoading{display:grid}
+.mediaBubble.mediaError .chatMedia{display:none!important}
+.mediaBubble time{align-self:flex-end;display:block!important;margin:4px 5px 1px!important}
+@media(max-width:700px){.mediaBubble{width:min(82vw,420px)!important;max-width:min(82vw,420px)!important}.mediaBubble .chatMedia{max-height:70vh!important}}

@@ -63,3 +63,22 @@
 .statusBottom{position:absolute;left:15px;right:15px;bottom:14px;display:flex;gap:10px;align-items:center;z-index:5;padding-bottom:env(safe-area-inset-bottom)}
 .statusReply{flex:1;border:1px solid rgba(255,255,255,.28);border-radius:24px;background:rgba(0,0,0,.38);color:#fff;text-align:left;padding:12px 17px;cursor:pointer}.statusHeart{width:48px;height:48px;border:0;border-radius:50%;background:rgba(0,0,0,.38);color:#fff;display:grid;place-items:center;cursor:pointer}.statusHeart svg{width:25px;height:25px;fill:none;stroke:currentColor;stroke-width:1.8}
 @media(max-width:700px){.statusTop{padding-top:16px}.statusCaptionOverlay{bottom:92px;font-size:16px}.statusBottom{bottom:8px}}
+
+/* Linka Status — visual integrado ao aplicativo */
+.statusScreen{background:#071015}
+.statusTop{height:64px;padding:8px 12px 6px;top:0;background:linear-gradient(180deg,rgba(7,16,21,.96),rgba(7,16,21,.58),transparent);}
+.statusProgress{top:64px;left:12px;right:12px;padding:0;gap:3px;height:2px;align-items:stretch;background:transparent;z-index:6}
+.statusProgressPart{height:2px;border-radius:2px;background:rgba(255,255,255,.20);box-shadow:none}
+.statusProgressPart.done{background:rgba(255,255,255,.62)}
+.statusProgressPart.current{background:rgba(255,255,255,.20)}
+.statusProgressPart.current i{height:100%;background:rgba(255,255,255,.95)}
+.statusStage{background:#071015}
+.statusFullMedia{background:#071015}
+.statusBottom{bottom:10px;left:12px;right:12px}
+.statusReply{height:46px;padding:0 17px;background:rgba(10,20,25,.78);border:1px solid rgba(255,255,255,.20);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.statusHeart{position:relative;width:46px;height:46px;background:rgba(10,20,25,.78);border:1px solid rgba(255,255,255,.12);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.statusHeart.liked{color:#ff4f7b}
+.statusHeart em{position:absolute;right:5px;bottom:2px;font-size:9px;font-style:normal;color:#fff;opacity:.85}
+.statusDeleteSheet{padding:2px 0 0}
+.statusDeleteTitle{font-size:18px;font-weight:800;padding:5px 2px 12px;color:#e9edef}
+.statusDeleteAction{color:#ff6b6b!important;font-weight:700}

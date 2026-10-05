@@ -243,7 +243,7 @@ function clientMessage(m){
   }
   return out;
 }
-app.get('/api/media/:messageId',auth,(req,res)=>{
+app.get('/api/media/:messageId',(req,res,next)=>{const qt=String(req.query?.token||'');if(qt){req.headers.authorization='Bearer '+qt}auth(req,res,next)},(req,res)=>{
   const mid=String(req.params.messageId);
   let found=null;
   for(const list of Object.values(db.messages)){

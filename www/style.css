@@ -139,3 +139,10 @@
 .mediaBubble.mediaError .chatMedia{display:none!important}
 .mediaBubble time{align-self:flex-end;display:block!important;margin:4px 5px 1px!important}
 @media(max-width:700px){.mediaBubble{width:min(82vw,420px)!important;max-width:min(82vw,420px)!important}.mediaBubble .chatMedia{max-height:70vh!important}}
+
+/* Linka v25 - mídia no estilo WhatsApp */
+.mediaBubble{width:fit-content!important;max-width:min(92vw,520px)!important;min-width:0!important;padding:4px!important;display:block!important;box-sizing:border-box!important;overflow:hidden!important}
+.mediaBubble .chatMedia{display:block!important;width:auto!important;height:auto!important;max-width:100%!important;max-height:72vh!important;min-width:0!important;min-height:0!important;object-fit:contain!important;border-radius:9px!important}
+.mediaBubble img.chatMedia{width:auto!important;height:auto!important}
+.mediaBubble video.chatMedia{width:auto!important;height:auto!important;max-width:100%!important;max-height:72vh!important}
+@media(max-width:700px){.mediaBubble{max-width:92vw!important}.mediaBubble .chatMedia{max-width:100%!important;max-height:70vh!important}}

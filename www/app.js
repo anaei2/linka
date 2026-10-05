@@ -110,7 +110,49 @@ function statusViewer(list,index){
     $('#statusReply').onclick=()=>{root.innerHTML='';openChat(x.user.id);setTimeout(()=>{const input=$('#msg');if(input){const prefix=x.text?`Respondendo ao status: “${x.text.slice(0,140)}”`:'Respondendo ao seu status';input.value=prefix;input.focus();input.setSelectionRange(input.value.length,input.value.length)}},120)};
     $('#statusHeart').onclick=async()=>{if(isMine)return;try{const r=await api('/api/statuses/'+x.user.id+'/like',{method:'POST'});x.likedByMe=r.liked;x.likeCount=r.likeCount;draw()}catch(e){toast(e.message)}};
     $('#statusMore').onclick=()=>{if(!isMine)return;modal(`<div class="statusDeleteSheet"><div class="statusDeleteTitle">Meu status</div><button class="menurow statusDeleteAction" id="deleteStatusNow">Apagar status</button><button class="menurow" data-close>Cancelar</button></div>`);$('#deleteStatusNow').onclick=async()=>{try{await api('/api/statuses',{method:'DELETE'});$('#modal').innerHTML='';await statusView();toast('Status apagado')}catch(e){toast(e.message)}}};
-    const v=$('#statusVideo'); if(v){v.play().catch(()=>{});v.onended=()=>{if(current<list.length-1){current++;draw()}else root.innerHTML=''}}
+    const progressBar=$('.statusProgressPart.current i');
+    const advanceStatus=()=>{if(current<list.length-1){current++;draw()}else{root.innerHTML=''}};
+    // Segurar o status pausa tudo e esconde a interface, como no WhatsApp.
+    // Ao soltar, o status continua exatamente de onde parou.
+    let holdTimer=null, holding=false;
+    const stage=$('.statusStage');
+    const pauseStatus=()=>{
+      if(holding)return;
+      holding=true;
+      if(stage) stage.closest('.statusScreen')?.classList.add('holding');
+      if(progressBar) progressBar.style.animationPlayState='paused';
+      const video=$('#statusVideo');
+      if(video) video.pause();
+    };
+    const resumeStatus=()=>{
+      clearTimeout(holdTimer);
+      if(!holding)return;
+      holding=false;
+      if(stage) stage.closest('.statusScreen')?.classList.remove('holding');
+      if(progressBar) progressBar.style.animationPlayState='running';
+      const video=$('#statusVideo');
+      if(video) video.play().catch(()=>{});
+    };
+    if(stage){
+      stage.addEventListener('pointerdown',()=>{
+        clearTimeout(holdTimer);
+        holdTimer=setTimeout(pauseStatus,180);
+      },{passive:true});
+      stage.addEventListener('pointerup',resumeStatus,{passive:true});
+      stage.addEventListener('pointercancel',resumeStatus,{passive:true});
+      stage.addEventListener('pointerleave',()=>{if(holding)resumeStatus()},{passive:true});
+    }
+    if(progressBar) progressBar.onanimationend=advanceStatus;
+    const v=$('#statusVideo');
+    if(v){
+      v.onloadedmetadata=()=>{
+        if(Number.isFinite(v.duration)&&v.duration>0&&progressBar){
+          progressBar.style.animationDuration=v.duration+'s';
+        }
+      };
+      v.play().catch(()=>{});
+      v.onended=advanceStatus;
+    }
   }
   function formatStatusTime(ts){try{const d=new Date(Number(ts));const now=new Date();const same=d.toDateString()===now.toDateString();return same?'Hoje '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}catch{return ''}}
   draw();

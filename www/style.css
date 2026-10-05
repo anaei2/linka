@@ -82,3 +82,19 @@
 .statusDeleteSheet{padding:2px 0 0}
 .statusDeleteTitle{font-size:18px;font-weight:800;padding:5px 2px 12px;color:#e9edef}
 .statusDeleteAction{color:#ff6b6b!important;font-weight:700}
+
+/* Pressionar e segurar um status: pausa o conteúdo e limpa a interface para facilitar a leitura. */
+.statusScreen.holding .statusTop,
+.statusScreen.holding .statusProgress,
+.statusScreen.holding .statusBottom,
+.statusScreen.holding .statusCaptionOverlay{
+  opacity:0 !important;
+  pointer-events:none !important;
+  transition:opacity .12s ease;
+}
+.statusScreen.holding .statusStage{
+  cursor:default;
+}
+.statusScreen.holding .statusFullMedia{
+  filter:none;
+}

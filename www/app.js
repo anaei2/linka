@@ -432,7 +432,7 @@ function ensureCallUi(){
       <div id="videoStage" class="videoStage" hidden><video id="callRemoteVideo" class="callRemoteVideo" autoplay playsinline></video><video id="callLocalVideo" class="callLocalVideo" autoplay muted playsinline></video></div>
       <div id="callAvatar" class="callAvatar"></div>
       <h2 id="callName">Chamada</h2>
-      <p id="callStatus">Chamada</p>
+      <p id="callStatus">Chamada</p><div id="callDuration" class="callDuration" hidden>00:00</div>
       <div class="callActions">
         <button id="callDecline" class="callDecline" type="button" aria-label="Recusar ou cancelar chamada"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.8 3.8 6c-.7.7-.8 1.8-.2 2.6 2.1 2.9 5 5.8 7.9 7.9.8.6 1.9.5 2.6-.2l1.2-1.2-3-3-1.1 1.1c-1.2-.9-2.5-2.2-3.4-3.4l1.1-1.1-3-3z"/><path d="m4 4 16 16"/></svg></button>
         <button id="callAccept" class="callAccept" type="button" aria-label="Atender chamada"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5.1 5.6 6.5c-.7.7-.8 1.8-.2 2.6 2.2 3 5.1 5.9 8.1 8.1.8.6 1.9.5 2.6-.2l1.4-1.4-2.8-2.8-1.3 1.3c-1.1-.8-2.3-2-3.1-3.1l1.3-1.3L7 5.1Z"/><path d="M14.5 5.5c2.2.4 3.6 1.8 4 4"/><path d="M14.5 2.5c3.9.5 6.4 3 7 6.9"/></svg></button>
@@ -476,15 +476,19 @@ function startCallTimer(){
     const sec=Math.max(0,Math.floor((Date.now()-A.call.connectedAt)/1000));
     const m=String(Math.floor(sec/60)).padStart(2,'0');
     const s=String(sec%60).padStart(2,'0');
-    const el=$('#callTimer');
-    if(el)el.textContent=m+':'+s;
+    const text=m+':'+s;
+    const el=$('#callDuration');
+    if(el){el.hidden=false;el.textContent=text}
+    const legacy=$('#callTimer');
+    if(legacy)legacy.textContent=text;
   };
   update();
   A.call.callTimer=setInterval(update,1000);
 }
 function markCallConnected(){
   $('#callAccept').hidden=true;$('#callDecline').hidden=true;$('#callEnd').hidden=false;
-  $('#callStatus').innerHTML='Conectado <span id="callTimer" class="callTimer">00:00</span>';
+  $('#callStatus').textContent='Conectado';
+  const duration=$('#callDuration');if(duration){duration.hidden=false;duration.textContent='00:00'}
   startCallTimer();
 }
 
@@ -492,7 +496,7 @@ function showCallOverlay(name,photo,status,incoming=false){
   ensureCallUi();const o=$('#callOverlay');o.hidden=false;
   const accept=$('#callAccept'),decline=$('#callDecline'),end=$('#callEnd');
   accept.disabled=false;decline.disabled=false;
-  accept.hidden=!incoming;decline.hidden=false;end.hidden=true;
+  accept.hidden=!incoming;decline.hidden=false;end.hidden=true;const duration=$('#callDuration');if(duration){duration.hidden=true;duration.textContent='00:00'}
   $('#callAvatar').innerHTML=photo?`<img src="${esc(photo)}">`:esc((name||'?')[0].toUpperCase());
   $('#callName').textContent=name||'Chamada';$('#callStatus').textContent=status||'Chamada';
 }
@@ -511,9 +515,11 @@ function stopLiveAudio(){
 }
 async function startLiveAudio(){
   if(A.call.audioContext&&A.call.processor)return true;
-  const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
+  const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,channelCount:1,sampleRate:48000},video:false});
   const ctx=new (window.AudioContext||window.webkitAudioContext)();await ctx.resume();
   const source=ctx.createMediaStreamSource(stream);
+  const high=ctx.createBiquadFilter();high.type='highpass';high.frequency.value=90;high.Q.value=0.7;
+  const compressor=ctx.createDynamicsCompressor();compressor.threshold.value=-28;compressor.knee.value=18;compressor.ratio.value=3;compressor.attack.value=0.003;compressor.release.value=0.12;
   const processor=ctx.createScriptProcessor(4096,1,1);
   const silent=ctx.createGain();silent.gain.value=0;
   A.call.stream=stream;A.call.audioContext=ctx;A.call.source=source;A.call.processor=processor;A.call.silentGain=silent;A.call.playTime=ctx.currentTime+0.08;
@@ -523,7 +529,7 @@ async function startLiveAudio(){
     if(!pcm.length)return;
     try{window.__linkaWs.send(JSON.stringify({to:A.call.peer,type:'call-live-audio',callId:A.call.id,pcm:pcm16Base64(pcm)}))}catch{}
   };
-  source.connect(processor);processor.connect(silent);silent.connect(ctx.destination);
+  source.connect(high);high.connect(compressor);compressor.connect(processor);processor.connect(silent);silent.connect(ctx.destination);
   return true;
 }
 function playLiveAudio(b64){
@@ -531,7 +537,7 @@ function playLiveAudio(b64){
   const ctx=A.call.audioContext;if(ctx.state==='suspended')ctx.resume().catch(()=>{});
   const samples=base64ToFloat32(b64);if(!samples.length)return;
   const buffer=ctx.createBuffer(1,samples.length,16000);buffer.copyToChannel(samples,0);
-  const src=ctx.createBufferSource();src.buffer=buffer;src.connect(ctx.destination);
+  const src=ctx.createBufferSource();src.buffer=buffer;const out=ctx.createGain();out.gain.value=0.88;src.connect(out);out.connect(ctx.destination);
   const now=ctx.currentTime;A.call.playTime=Math.max(A.call.playTime||now+0.05,now+0.03);src.start(A.call.playTime);A.call.playTime+=buffer.duration;
 }
 async function setupAudioMedia(){return startLiveAudio().then(()=>A.call.stream)}
@@ -647,7 +653,7 @@ function endCall(notifyPeer=false){
   const wasConnected=!!A.call.connectedAt;
   if(notifyPeer&&peer&&id)sendSignal(peer,{type:'call-end',callId:id,mode:A.call.mode});
   if(wasConnected)playSound('callEnd');
-  stopLiveAudio();try{A.call.videoLocal?.getTracks?.().forEach(t=>t.stop())}catch{}try{A.call.videoPc?.close()}catch{}try{A.call.audioPc?.close()}catch{}try{A.call.audioLocal?.getTracks?.().forEach(t=>t.stop())}catch{}const rv=$('#callRemoteVideo'),lv=$('#callLocalVideo');if(rv)rv.srcObject=null;if(lv)lv.srcObject=null;const vst=$('#videoStage');if(vst)vst.hidden=true;const cb=$('#callCard');if(cb)cb.classList.remove('videoCallCard');if(A.call.callTimer)clearInterval(A.call.callTimer);A.call={pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[],roomCode:null,roomRole:null,roomJoined:false,remoteRoomJoined:false,roomName:null,roomPhoto:null,mode:'audio',muted:false,videoPc:null,videoLocal:null,videoRemote:null,videoOffer:null,videoIceQueue:[],videoRemoteIceQueue:[],audioPc:null,audioLocal:null,audioRemote:null,audioRemoteIceQueue:[],audioOffer:null,audioContext:null,source:null,processor:null,silentGain:null,playTime:0,accepted:false,liveStarted:false,connectedAt:null,callTimer:null,ringContext:null,ringGain:null,ringTimer:null};hideCallOverlay();
+  stopLiveAudio();try{A.call.videoLocal?.getTracks?.().forEach(t=>t.stop())}catch{}try{A.call.videoPc?.close()}catch{}try{A.call.audioPc?.close()}catch{}try{A.call.audioLocal?.getTracks?.().forEach(t=>t.stop())}catch{}const rv=$('#callRemoteVideo'),lv=$('#callLocalVideo');if(rv)rv.srcObject=null;if(lv)lv.srcObject=null;const vst=$('#videoStage');if(vst)vst.hidden=true;const cb=$('#callCard');if(cb)cb.classList.remove('videoCallCard');if(A.call.callTimer)clearInterval(A.call.callTimer);const duration=$('#callDuration');if(duration){duration.hidden=true;duration.textContent='00:00'}A.call={pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[],roomCode:null,roomRole:null,roomJoined:false,remoteRoomJoined:false,roomName:null,roomPhoto:null,mode:'audio',muted:false,videoPc:null,videoLocal:null,videoRemote:null,videoOffer:null,videoIceQueue:[],videoRemoteIceQueue:[],audioPc:null,audioLocal:null,audioRemote:null,audioRemoteIceQueue:[],audioOffer:null,audioContext:null,source:null,processor:null,silentGain:null,playTime:0,accepted:false,liveStarted:false,connectedAt:null,callTimer:null,ringContext:null,ringGain:null,ringTimer:null};hideCallOverlay();
 }
 function sendTyping(active){if(!A.active||window.__linkaWs?.readyState!==1)return;try{window.__linkaWs.send(JSON.stringify({type:'typing',to:A.active.id,active:!!active}))}catch{}}
 function setTypingBubble(active){const box=$('#msgs');if(!box)return;let el=$('#remoteTypingBubble');if(active){if(!el){el=document.createElement('div');el.id='remoteTypingBubble';el.className='bubble typingBubble';el.innerHTML='<span class="typingDots"><i></i><i></i><i></i></span>';box.appendChild(el)}box.scrollTop=box.scrollHeight}else if(el)el.remove()}

@@ -1,10 +1,10 @@
-# Linka v34 — correção de chamadas
+# Linka v35 — chamadas estabilizadas
 
-Esta versão corrige principalmente:
-- botão Atender que podia permanecer desabilitado após uma chamada anterior;
-- atendimento de vídeo com fluxo de conexão mais seguro;
-- atendimento de voz com proteção contra duplo toque;
-- limpeza da tela ao encerrar a chamada;
-- encerramento idempotente no servidor para evitar chamadas presas/duplicadas.
+- Chamadas de áudio voltaram ao transporte de áudio por WebSocket/PCM do projeto, evitando dependência de ICE/TURN para voz.
+- Chamadas de vídeo continuam em WebRTC.
+- Vídeo agora informa falha de ICE/rede em vez de ficar indefinidamente em “Conectando”.
+- Adicionado timeout visual para vídeo sem conexão.
+- Limpeza de chamada e permissões continuam sendo encerradas ao desligar.
 
-Deploy no Render: `npm install` e `npm start`.
+## Deploy
+Use os mesmos arquivos do projeto no Render: `npm install` e `npm start`.

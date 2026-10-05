@@ -34,6 +34,7 @@ async function start(){
       await loadContacts();
       await loadConversations();
       await loadNotifications();
+      try{A.statuses=await api('/api/statuses')}catch{A.statuses=[]}
       render();
       hideBoot();
       initNotifications();
@@ -60,9 +61,9 @@ async function start(){
 async function loadContacts(){A.contacts=await api('/api/contacts')}
 async function loadConversations(){A.chatIds=await api('/api/conversations')}
 function render(){document.body.classList.remove('chat-open');document.body.innerHTML=`<div class="app"><aside class="side" id="side"><header class="top"><div class="profile" id="profile">${av(A.user)}<div><b>${esc(A.user.name)}</b><span>${esc('@'+A.user.username)}</span></div></div><button class="icon" id="menu">☰</button></header><div class="search">⌕<input id="search" placeholder="Pesquisar contatos ou conversas"></div><div class="tabs"><button class="tab active" id="chats">Conversas</button><button class="tab" id="contacts">Contatos</button><button class="tab" id="statusTab">Status</button><button class="tab" id="callsTab" aria-label="Ligações"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8c1.5 2.9 3.7 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1.1-.2 1 .3 2 .5 3 .5.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C11.5 21 3 12.5 3 2.5c0-.6.4-1 1-1H7c.6 0 1 .4 1 1 0 1 .2 2 .5 3 .1.4 0 .8-.2 1.1l-1.7 1.7z"/></svg><span>Ligações</span></button></div><div class="list" id="list"></div></aside><main class="main" id="main"><div class="welcome"><div class="mark">A</div><h1>Linka</h1><p>Selecione um contato para começar.</p></div></main><div id="modal"></div></div>`;$('#profile').onclick=profileModal;$('#menu').onclick=menuModal;$('#search').oninput=e=>{A.search=e.target.value.trim();renderList()};$('#chats').onclick=()=>{setTab($('#chats'));renderList()};$('#contacts').onclick=()=>{setTab($('#contacts'));contactsView()};$('#statusTab').onclick=statusView;$('#callsTab').onclick=callsView;renderList()}
-function renderList(showAll=false){const q=A.search.toLowerCase();const xs=A.contacts.filter(c=>(showAll||A.chatIds.includes(String(c.id)))&&(c.name+' '+c.username).toLowerCase().includes(q));const list=$('#list');if(!list)return;if(!xs.length){list.innerHTML='<div class="empty">Nenhum contato.<br><button class="link" id="find" type="button">Adicionar contato</button></div>';const f=$('#find');if(f)f.onclick=addContactModal;return}list.innerHTML=xs.map(c=>`<button class="item" type="button" data-id="${esc(c.id)}" aria-label="Abrir conversa com ${esc(c.name)}">${av(c)}<div class="info"><b>${esc(c.name)}</b><span>@${esc(c.username)}</span><small class="presence" data-presence="${esc(c.id)}">${esc(lastSeenText(c))}</small></div></button>`).join('');list.querySelectorAll('.item').forEach(item=>{
+function renderList(showAll=false){const q=A.search.toLowerCase();const xs=A.contacts.filter(c=>(showAll||A.chatIds.includes(String(c.id)))&&(c.name+' '+c.username).toLowerCase().includes(q));const list=$('#list');if(!list)return;if(!xs.length){list.innerHTML='<div class="empty">Nenhum contato.<br><button class="link" id="find" type="button">Adicionar contato</button></div>';const f=$('#find');if(f)f.onclick=addContactModal;return}list.innerHTML=xs.map(c=>`<button class="item" type="button" data-id="${esc(c.id)}" aria-label="Abrir conversa com ${esc(c.name)}">${`<span class="avatarStatusWrap ${((A.statuses||[]).some(x=>String(x.user.id)===String(c.id)&&!x.hasViewed))?"has-unseen-status":""}">${av(c)}${((A.statuses||[]).some(x=>String(x.user.id)===String(c.id)&&!x.hasViewed))?'<i class="statusDot"></i>':''}</span>`}<div class="info"><b>${esc(c.name)}</b><span>@${esc(c.username)}</span><small class="presence" data-presence="${esc(c.id)}">${esc(lastSeenText(c))}</small></div></button>`).join('');list.querySelectorAll('.item').forEach(item=>{
   const id=String(item.dataset.id);
-  item.onclick=()=>{if(longPressTriggered){longPressTriggered=false;return}openChat(id)};
+  item.onclick=()=>{if(longPressTriggered){longPressTriggered=false;return}const si=(A.statuses||[]).findIndex(x=>String(x.user.id)===id&&String(x.user.id)!==String(A.user.id)&&!x.hasViewed);if(si>=0){statusViewer(A.statuses,si)}else openChat(id)};
   item.addEventListener('pointerdown',()=>{longPressTriggered=false;clearTimeout(longPressTimer);longPressTimer=setTimeout(()=>{longPressTriggered=true;conversationActions(id)},650)},{passive:true});
   ['pointerup','pointercancel','pointerleave'].forEach(ev=>item.addEventListener(ev,()=>clearTimeout(longPressTimer),{passive:true}));
 })} 
@@ -79,7 +80,8 @@ async function statusView(){
   try{A.statuses=await api('/api/statuses')}catch{A.statuses=[]}
   const me=A.statuses.find(x=>String(x.user.id)===String(A.user.id));
   const others=A.statuses.filter(x=>String(x.user.id)!==String(A.user.id));
-  $('#list').innerHTML=`<div class="statusHeader"><b>Status</b><button class="smallbtn" id="newStatus">＋ Meu status</button></div>${me?`<button class="statusItem" id="myStatus">${av(me.user)}<span><b>Meu status</b><small>${esc(me.text|| (me.mediaType?'Foto ou vídeo':'Status'))}</small></span></button>`:'<div class="empty">Você ainda não publicou um status.</div>'}<div class="statusSection">ATUALIZAÇÕES DOS CONTATOS</div>${others.length?others.map((x,i)=>`<button class="statusItem" data-status-index="${A.statuses.indexOf(x)}">${av(x.user)}<span><b>${esc(x.user.name)}</b><small>${x.mediaType?('Foto ou vídeo'):(esc(x.text)||'Status')}</small></span></button>`).join(''):'<div class="empty">Nenhum contato publicou status nas últimas 24 horas.</div>'}`;
+  const myViews=me?.viewerCount||0;
+  $('#list').innerHTML=`<div class="statusHeader"><b>Status</b><button class="smallbtn" id="newStatus">＋ Meu status</button></div>${me?`<button class="statusItem" id="myStatus">${av(me.user)}<span><b>Meu status</b><small>${esc(me.text|| (me.mediaType?'Foto ou vídeo':'Status'))} · ${myViews} ${myViews===1?'visualização':'visualizações'}</small></span></button>`:'<div class="empty">Você ainda não publicou um status.</div>'}<div class="statusSection">ATUALIZAÇÕES DOS CONTATOS</div>${others.length?others.map(x=>`<button class="statusItem" data-status-index="${A.statuses.indexOf(x)}"><span class="avatarStatusWrap ${x.hasViewed?'status-viewed':'has-unseen-status'}">${av(x.user)}${!x.hasViewed?'<i class="statusDot"></i>':''}</span><span><b>${esc(x.user.name)}</b><small>${x.mediaType?'Foto ou vídeo':(esc(x.text)||'Status')}</small></span></button>`).join(''):'<div class="empty">Nenhum contato publicou status nas últimas 24 horas.</div>'}`;
   $('#newStatus').onclick=()=>statusEditor(me);
   $('#myStatus')?.addEventListener('click',()=>statusViewer(A.statuses,Math.max(0,A.statuses.indexOf(me))));
   document.querySelectorAll('[data-status-index]').forEach(b=>b.onclick=()=>statusViewer(A.statuses,Number(b.dataset.statusIndex)));
@@ -93,6 +95,13 @@ function statusEditor(existing){
   $('#saveStatus').onclick=async()=>{try{const text=$('#statusText').value.trim();if(!text&&!mediaData){toast('Adicione um texto, foto ou vídeo.');return}await api('/api/statuses',{method:'POST',body:{text,media:mediaData,mediaType}});$('#modal').innerHTML='';statusView();toast('Status publicado')}catch(e){toast(e.message)}};
   $('#deleteStatus')?.addEventListener('click',()=>{modal(`<div class="statusDeleteSheet"><div class="statusDeleteTitle">Meu status</div><button class="menurow statusDeleteAction" id="deleteStatusNow">Apagar status</button><button class="menurow" data-close>Cancelar</button></div>`);$('#deleteStatusNow').onclick=async()=>{try{await api('/api/statuses',{method:'DELETE'});$('#modal').innerHTML='';statusView();toast('Status apagado')}catch(e){toast(e.message)}}})
 }
+async function statusViewersModal(){
+  try{
+    const r=await api('/api/statuses/'+A.user.id+'/views');
+    const rows=r.viewers||[];
+    modal(`<div class="statusViewers"><h2>Visualizações do status</h2><div class="statusViewerCount">${r.count||0} ${(r.count||0)===1?'pessoa viu':'pessoas viram'} seu status</div>${rows.length?rows.map(u=>`<div class="viewerRow">${av(u)}<div><b>${esc(u.name)}</b><small>@${esc(u.username)}</small></div></div>`).join(''):'<div class="empty">Ninguém viu seu status ainda.</div>'}<button class="danger" data-close>Fechar</button></div>`);
+  }catch(e){toast(e.message)}
+}
 function statusViewer(list,index){
   if(!Array.isArray(list)||!list.length)return;
   let current=Math.max(0,Math.min(index,list.length-1));
@@ -103,15 +112,16 @@ function statusViewer(list,index){
     const media=x.mediaType?.startsWith('video/')?`<video id="statusVideo" class="statusFullMedia" autoplay playsinline src="${x.media}"></video>`:x.media?`<img class="statusFullMedia" src="${x.media}" alt="Status de ${esc(x.user.name)}">`:`<div class="statusTextOnly">${esc(x.text||'')}</div>`;
     const progress=list.map((_,i)=>`<span class="statusProgressPart ${i<current?'done':i===current?'current':''}"><i></i></span>`).join('');
     const liked=!!x.likedByMe;
-    root.innerHTML=`<div class="statusScreen"><div class="statusTop"><button class="statusBack" id="statusBack" aria-label="Voltar">‹</button><div class="statusIdentity">${av(x.user)}<div><b>${esc(x.user.name)}</b><small>${formatStatusTime(x.createdAt)}</small></div></div><button class="statusMore" id="statusMore" aria-label="Mais opções">⋮</button></div><div class="statusProgress">${progress}</div><div class="statusStage"><button class="statusTapZone statusPrev" id="statusPrev" aria-label="Status anterior"></button>${media}<button class="statusTapZone statusNext" id="statusNext" aria-label="Próximo status"></button>${x.text?`<div class="statusCaptionOverlay">${esc(x.text)}</div>`:''}</div><div class="statusBottom"><button class="statusReply" id="statusReply"><span>Responder</span></button><button class="statusHeart ${liked?'liked':''}" id="statusHeart" aria-label="${liked?'Descurtir':'Curtir'}"><svg viewBox="0 0 24 24"><path d="M20.8 8.9c0 5.1-8.8 10-8.8 10s-8.8-4.9-8.8-10A4.7 4.7 0 0 1 8 4.2c1.5 0 2.8.7 4 2 1.2-1.3 2.5-2 4-2a4.7 4.7 0 0 1 4.8 4.7Z"/></svg><em>${x.likeCount||0}</em></button></div></div>`;
-    $('#statusBack').onclick=()=>root.innerHTML='';
+    if(!isMine && !x.hasViewed){x.hasViewed=true;api('/api/statuses/'+x.user.id+'/view',{method:'POST'}).catch(()=>{})}
+    root.innerHTML=`<div class="statusScreen"><div class="statusTop"><button class="statusBack" id="statusBack" aria-label="Voltar">‹</button><div class="statusIdentity">${av(x.user)}<div><b>${esc(x.user.name)}</b><small>${formatStatusTime(x.createdAt)}</small></div></div><button class="statusMore" id="statusMore" aria-label="Mais opções">⋮</button></div><div class="statusProgress">${progress}</div><div class="statusStage"><button class="statusTapZone statusPrev" id="statusPrev" aria-label="Status anterior"></button>${media}<button class="statusTapZone statusNext" id="statusNext" aria-label="Próximo status"></button>${x.text?`<div class="statusCaptionOverlay">${esc(x.text)}</div>`:''}</div><div class="statusBottom"><button class="statusReply" id="statusReply"><span>Responder</span></button><button class="statusHeart ${liked?'liked':''}" id="statusHeart" aria-label="${liked?'Descurtir':'Curtir'}"><svg viewBox="0 0 24 24"><path d="M20.8 8.9c0 5.1-8.8 10-8.8 10s-8.8-4.9-8.8-10A4.7 4.7 0 0 1 8 4.2c1.5 0 2.8.7 4 2 1.2-1.3 2.5-2 4-2a4.7 4.7 0 0 1 4.8 4.7Z"/></svg></button></div></div>`;
+    $('#statusBack').onclick=()=>{root.innerHTML='';renderList();};
     $('#statusPrev').onclick=()=>{if(current>0){current--;draw()}};
     $('#statusNext').onclick=()=>{if(current<list.length-1){current++;draw()}else root.innerHTML=''};
     $('#statusReply').onclick=()=>{root.innerHTML='';openChat(x.user.id);setTimeout(()=>{const input=$('#msg');if(input){const prefix=x.text?`Respondendo ao status: “${x.text.slice(0,140)}”`:'Respondendo ao seu status';input.value=prefix;input.focus();input.setSelectionRange(input.value.length,input.value.length)}},120)};
     $('#statusHeart').onclick=async()=>{if(isMine)return;try{const r=await api('/api/statuses/'+x.user.id+'/like',{method:'POST'});x.likedByMe=r.liked;x.likeCount=r.likeCount;draw()}catch(e){toast(e.message)}};
     $('#statusMore').onclick=()=>{if(!isMine)return;modal(`<div class="statusDeleteSheet"><div class="statusDeleteTitle">Meu status</div><button class="menurow statusDeleteAction" id="deleteStatusNow">Apagar status</button><button class="menurow" data-close>Cancelar</button></div>`);$('#deleteStatusNow').onclick=async()=>{try{await api('/api/statuses',{method:'DELETE'});$('#modal').innerHTML='';await statusView();toast('Status apagado')}catch(e){toast(e.message)}}};
     const progressBar=$('.statusProgressPart.current i');
-    const advanceStatus=()=>{if(current<list.length-1){current++;draw()}else{root.innerHTML=''}};
+    const advanceStatus=()=>{if(current<list.length-1){current++;draw()}else{root.innerHTML='';renderList()}};
     // Segurar o status pausa tudo e esconde a interface, como no WhatsApp.
     // Ao soltar, o status continua exatamente de onde parou.
     let holdTimer=null, holding=false;
@@ -134,6 +144,9 @@ function statusViewer(list,index){
       if(video) video.play().catch(()=>{});
     };
     if(stage){
+      let swipeStartY=0, swipeStartX=0;
+      stage.addEventListener('pointerdown',e=>{swipeStartY=e.clientY;swipeStartX=e.clientX},{passive:true});
+      stage.addEventListener('pointerup',e=>{const dy=e.clientY-swipeStartY,dx=e.clientX-swipeStartX;if(isMine&&dy<-70&&Math.abs(dy)>Math.abs(dx)){clearTimeout(holdTimer);resumeStatus();statusViewersModal();return}},{passive:true});
       stage.addEventListener('pointerdown',()=>{
         clearTimeout(holdTimer);
         holdTimer=setTimeout(pauseStatus,180);

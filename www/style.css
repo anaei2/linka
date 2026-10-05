@@ -98,3 +98,10 @@
 .statusScreen.holding .statusFullMedia{
   filter:none;
 }
+
+/* Indicador de status não visto e painel de visualizações */
+.avatarStatusWrap{position:relative;display:inline-flex;flex:none}
+.avatarStatusWrap .avatar{position:relative}
+.statusDot{position:absolute;right:-1px;bottom:-1px;width:10px;height:10px;border-radius:50%;background:#22c55e;border:2px solid #111b21;z-index:3;box-sizing:border-box}
+.status-viewed .avatar{border-color:rgba(255,255,255,.62)!important}
+.statusViewers{padding:2px 0}.statusViewerCount{font-size:14px;color:#9aabb3;margin:-4px 0 14px}.viewerRow{display:flex;align-items:center;gap:11px;padding:10px 0;border-bottom:1px solid #1e292f}.viewerRow .avatar{width:42px;height:42px}.viewerRow>div:last-child{min-width:0}.viewerRow b,.viewerRow small{display:block}.viewerRow small{color:#8b9aa1;margin-top:2px}

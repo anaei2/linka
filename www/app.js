@@ -534,93 +534,48 @@ function playLiveAudio(b64){
   const src=ctx.createBufferSource();src.buffer=buffer;src.connect(ctx.destination);
   const now=ctx.currentTime;A.call.playTime=Math.max(A.call.playTime||now+0.05,now+0.03);src.start(A.call.playTime);A.call.playTime+=buffer.duration;
 }
-async function setupAudioMedia(){
-  if(A.call.audioLocal)return A.call.audioLocal;
-  if(!navigator.mediaDevices?.getUserMedia)throw new Error('Microfone não disponível neste dispositivo');
-  const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
-  A.call.audioLocal=stream;
-  return stream;
-}
-function setupAudioPeer(){
-  if(A.call.audioPc)return A.call.audioPc;
-  const pc=new RTCPeerConnection({iceServers:videoIceServers(),bundlePolicy:'max-bundle'});
-  A.call.audioPc=pc;
-  pc.onicecandidate=e=>{if(e.candidate&&A.call.peer&&A.call.id)sendSignal(A.call.peer,{type:'call-audio-ice',callId:A.call.id,candidate:e.candidate})};
-  pc.ontrack=e=>{if(!e.streams[0])return;A.call.audioRemote=e.streams[0];let el=$('#callRemoteAudio');if(el){el.srcObject=e.streams[0];el.autoplay=true;el.playsInline=true;el.play().catch(()=>{})}};
-  pc.onconnectionstatechange=()=>{if(pc.connectionState==='connected')markCallConnected();else if(pc.connectionState==='failed'){toast('Falha na conexão de áudio');endCall(true)}else if(pc.connectionState==='disconnected'){$('#callStatus').textContent='Reconectando áudio…';setTimeout(()=>{if(A.call.audioPc===pc&&pc.connectionState==='disconnected')pc.restartIce?.()},1200)}};
-  return pc;
-}
+async function setupAudioMedia(){return startLiveAudio().then(()=>A.call.stream)}
+function setupAudioPeer(){return null}
 async function startOutgoingAudioOffer(){
-  const stream=await setupAudioMedia();const pc=setupAudioPeer();
-  stream.getTracks().forEach(t=>{if(!pc.getSenders().some(s=>s.track===t))pc.addTrack(t,stream)});
-  const offer=await pc.createOffer({offerToReceiveAudio:true});await pc.setLocalDescription(offer);
-  const ok=await sendSignalReliable(A.call.peer,{type:'call-audio-offer',callId:A.call.id,offer:pc.localDescription});
+  await startLiveAudio();
+  A.call.liveStarted=true;
+  $('#callStatus').textContent='Conectando áudio…';
+  const ok=await sendSignalReliable(A.call.peer,{type:'call-live-start',callId:A.call.id});
   if(!ok)throw new Error('sinalização indisponível');
 }
 async function acceptIncomingCall(){
   stopOutgoingRing();
   if(!A.call.id||!A.call.peer)return;
-  if(A.call.mode==='video'){return acceptIncomingVideoCall()}
+  if(A.call.mode==='video')return acceptIncomingVideoCall();
   if(A.call.accepted)return;
   const callId=A.call.id,peer=A.call.peer;
   try{
     $('#callAccept').disabled=true;$('#callStatus').textContent='Conectando áudio…';A.call.accepted=true;
-    await setupAudioMedia();setupAudioPeer();
-    const ok=await sendSignalReliable(peer,{type:'call-audio-ready',callId});
+    await startLiveAudio();
+    A.call.liveStarted=true;
+    const ok=await sendSignalReliable(peer,{type:'call-live-ready',callId});
     if(!ok)throw new Error('sinalização indisponível');
-  }catch(e){
-    console.error(e);toast('Não foi possível acessar o microfone');
-    if(A.call.peer)sendSignal(A.call.peer,{type:'call-reject',callId:A.call.id});
-    endCall(false);
-  }
+  }catch(e){console.error(e);toast(e?.name==='NotAllowedError'?'Permita o microfone para atender a chamada':'Não foi possível conectar a chamada de voz');if(peer)sendSignal(peer,{type:'call-reject',callId});endCall(false)}
 }
 async function handleAudioReady(d){
   if(d?.callId!==A.call.id||A.call.mode!=='audio')return;
   try{await startOutgoingAudioOffer()}catch(e){console.error(e);toast('Não foi possível iniciar a chamada de voz');endCall(true)}
 }
-async function handleAudioOffer(d){
-  if(d?.callId!==A.call.id||A.call.mode!=='audio'||!A.call.accepted)return;
-  try{
-    await setupAudioMedia();const pc=setupAudioPeer();
-    A.call.audioLocal.getTracks().forEach(t=>{if(!pc.getSenders().some(s=>s.track===t))pc.addTrack(t,A.call.audioLocal)});
-    await pc.setRemoteDescription(d.offer);
-    for(const c of A.call.audioRemoteIceQueue.splice(0))try{await pc.addIceCandidate(c)}catch{}
-    const answer=await pc.createAnswer();await pc.setLocalDescription(answer);
-    const ok=await sendSignalReliable(d.from,{type:'call-audio-answer',callId:d.callId,answer:pc.localDescription});
-    if(!ok)throw new Error('sinalização indisponível');
-  }catch(e){console.error(e);toast('Falha ao conectar a chamada de voz');endCall(true)}
-}
-async function handleAudioAnswer(d){
-  if(d?.callId!==A.call.id||!A.call.audioPc)return;
-  try{await A.call.audioPc.setRemoteDescription(d.answer);for(const c of A.call.audioRemoteIceQueue.splice(0))try{await A.call.audioPc.addIceCandidate(c)}catch{}}catch(e){console.error(e);toast('Falha ao finalizar a chamada de voz');endCall(true)}
-}
-async function handleAudioIce(d){
-  if(d?.callId!==A.call.id||!d.candidate)return;const pc=A.call.audioPc;
-  if(!pc||!pc.remoteDescription){A.call.audioRemoteIceQueue.push(d.candidate);return}
-  try{await pc.addIceCandidate(d.candidate)}catch(e){console.warn('ICE áudio',e)}
-}
+async function handleAudioOffer(){return}
+async function handleAudioAnswer(){return}
+async function handleAudioIce(){return}
 async function handleLiveReady(d){
-  if(d?.callId!==A.call.id)return;
-  if(!A.call.accepted){return}
-  if(!A.call.liveStarted){
-    try{
-      await startLiveAudio();
-      A.call.liveStarted=true;
-      $('#callStatus').textContent='Conectando áudio…';
-      sendSignal(d.from,{type:'call-live-start',callId:d.callId});
-    }catch(e){console.error(e);toast('Não foi possível acessar o microfone');sendSignal(d.from,{type:'call-reject',callId:d.callId});endCall(false)}
-  }else{
+  if(d?.callId!==A.call.id||!A.call.accepted)return;
+  try{
+    if(!A.call.liveStarted){await startLiveAudio();A.call.liveStarted=true;}
     markCallConnected();
-  }
+    sendSignalReliable(d.from,{type:'call-live-start',callId:d.callId});
+  }catch(e){console.error(e);toast('Não foi possível acessar o microfone');sendSignal(d.from,{type:'call-reject',callId:d.callId});endCall(false)}
 }
 async function handleLiveStart(d){
-  if(!d?.callId||d.callId!==A.call.id)return;
-  if(!A.call.accepted)return;
-  try{
-    await startLiveAudio();
-    markCallConnected();
-    sendSignal(d.from,{type:'call-live-ready',callId:d.callId});
-  }catch(e){console.error(e);toast('Não foi possível acessar o microfone');sendSignal(d.from,{type:'call-reject',callId:d.callId});endCall(false)}
+  if(!d?.callId||d.callId!==A.call.id||!A.call.accepted)return;
+  try{await startLiveAudio();A.call.liveStarted=true;markCallConnected();sendSignalReliable(d.from,{type:'call-live-ready',callId:d.callId});}
+  catch(e){console.error(e);toast('Não foi possível acessar o microfone');sendSignal(d.from,{type:'call-reject',callId:d.callId});endCall(false)}
 }
 function handleLiveAudio(d){if(d?.callId===A.call.id&&A.call.peer===d.from)playLiveAudio(d.pcm)}
 
@@ -639,7 +594,7 @@ async function setupVideoMedia(){
 function setupVideoPeer(){
   if(A.call.videoPc)return A.call.videoPc;
   const pc=new RTCPeerConnection({iceServers:videoIceServers(),bundlePolicy:'max-bundle'});A.call.videoPc=pc;
-  pc.onicecandidate=e=>{if(e.candidate&&A.call.peer&&A.call.id)sendSignal(A.call.peer,{type:'call-video-ice',callId:A.call.id,candidate:e.candidate})};
+  pc.onicecandidate=e=>{if(e.candidate&&A.call.peer&&A.call.id)sendSignal(A.call.peer,{type:'call-video-ice',callId:A.call.id,candidate:e.candidate})};pc.oniceconnectionstatechange=()=>{if(pc.iceConnectionState==='failed'){console.warn('ICE vídeo falhou');$('#callStatus').textContent='Rede não conseguiu conectar o vídeo';}else if(pc.iceConnectionState==='checking')$('#callStatus').textContent='Conectando vídeo…'};
   pc.ontrack=e=>{const v=$('#callRemoteVideo');if(v&&e.streams[0]){A.call.videoRemote=e.streams[0];v.srcObject=e.streams[0];v.play().catch(()=>{})}};
   pc.onconnectionstatechange=()=>{if(pc.connectionState==='connected')markCallConnected();else if(pc.connectionState==='failed'){$('#callStatus').textContent='Falha na conexão de vídeo';setTimeout(()=>endCall(true),1200)}else if(pc.connectionState==='disconnected'){$('#callStatus').textContent='Reconectando vídeo…';setTimeout(()=>{if(A.call.videoPc===pc&&pc.connectionState==='disconnected')pc.restartIce?.()},1200)}};
   return pc;
@@ -654,8 +609,9 @@ async function startOutgoingVideoCall(contact){
 }
 function showVideoStage(){ensureCallUi();const st=$('#videoStage');if(st)st.hidden=false;const av=$('#callAvatar');if(av)av.style.display='none';const card=$('#callCard');if(card)card.classList.add('videoCallCard')}
 async function beginVideoOffer(){
-  const stream=await setupVideoMedia();const pc=setupVideoPeer();stream.getTracks().forEach(t=>pc.addTrack(t,stream));
+  const stream=await setupVideoMedia();const pc=setupVideoPeer();stream.getTracks().forEach(t=>{if(!pc.getSenders().some(s=>s.track===t))pc.addTrack(t,stream)});
   const offer=await pc.createOffer({offerToReceiveAudio:true,offerToReceiveVideo:true});await pc.setLocalDescription(offer);const ok=await sendSignalReliable(A.call.peer,{type:'call-video-offer',callId:A.call.id,offer:pc.localDescription});if(!ok)throw new Error('sinalização indisponível');
+  const callId=A.call.id;setTimeout(()=>{if(A.call.id===callId&&!A.call.connectedAt&&A.call.videoPc){$('#callStatus').textContent='Vídeo sem conexão de rede';}},15000);
 }
 async function acceptIncomingVideoCall(){
   if(!A.call.id||!A.call.peer||A.call.accepted)return;
@@ -676,7 +632,7 @@ function startOutgoingCall(contact){
   const callId=crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random();
   A.call.peer=contact.id;A.call.id=callId;A.call.incoming=null;A.call.accepted=true;A.call.liveStarted=false;A.call.mode='audio';A.call.connectedAt=null;A.call.callTimer=null;A.call.roomName=contact.name;A.call.roomPhoto=contact.photo||'';
   showCallOverlay(contact.name,contact.photo,'Chamando…',false);startOutgoingRing();
-  sendSignalReliable(contact.id,{type:'call-room-invite',callId,mode:'audio'}).then(ok=>{if(!ok){endCall(false);toast('Não foi possível iniciar a chamada de voz')}});
+  sendSignalReliable(contact.id,{type:'call-room-invite',callId,mode:'audio'}).then(ok=>{if(!ok){endCall(false);toast('Não foi possível iniciar a chamada de voz')}});setTimeout(()=>{if(A.call.id===callId&&!A.call.connectedAt){$('#callStatus').textContent='Aguardando a pessoa atender…'}},7000);
 }
 function handleCallRoomInvite(d){
   if(A.call.id){if(d?.from)sendSignal(d.from,{type:'call-busy',callId:d.callId});return}

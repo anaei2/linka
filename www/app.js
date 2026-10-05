@@ -169,7 +169,7 @@ function formatCallTime(ts){const d=new Date(ts||Date.now()),today=new Date();co
 function formatCallDuration(sec){sec=Math.max(0,Number(sec)||0);if(sec<60)return sec+'s';const m=Math.floor(sec/60),s=sec%60;return m+'min'+(s?` ${String(s).padStart(2,'0')}s`:'')}
 async function callsView(){setTab($('#callsTab'));const list=$('#list');if(!list)return;list.innerHTML='<div class="empty">Carregando ligações...</div>';try{A.calls=await api('/api/calls');}catch(e){A.calls=[];toast('Não foi possível carregar as ligações.')}if(!A.calls.length){list.innerHTML='<div class="empty">Nenhuma ligação ainda.</div>';return;}list.innerHTML=A.calls.map(c=>{const o=c.other||{};const mine=String(c.from)===String(A.user.id);const missed=['rejected','busy'].includes(c.status)&&!mine;const label=missed?'Chamada perdida':mine?'Chamada efetuada':'Chamada recebida';const arrow=missed?'missed':mine?'outgoing':'incoming';const duration=c.duration?` · ${formatCallDuration(c.duration)}`:'';return `<button class="callHistoryItem" type="button" data-id="${esc(o.id||'')}">${av(o)}<div class="callHistoryInfo"><b>${esc(o.name||'Contato')}</b><span class="callMeta ${arrow}"><span class="callArrow" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 19 19 5M19 5H9M19 5v10"/></svg></span>${label} · ${formatCallTime(c.endedAt||c.startedAt)}${duration}</span></div><span class="callHistoryBtn" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6.6 10.8c1.5 2.9 3.7 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1.1-.2 1 .0 2 .5 3 .5.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C11.5 21 3 12.5 3 2.5c0-.6.4-1-1-1H7c.6 0 1 .4 1 1 0 1 .2 2 .5 3 .1.4 0 .8-.2 1.1l-1.7 1.7z"/></svg></span></button>`}).join('');list.querySelectorAll('.callHistoryItem').forEach(item=>item.onclick=()=>{const id=item.dataset.id;if(id)openChat(String(id))});}
 
-async function openChat(id){const contact=A.contacts.find(x=>String(x.id)===String(id));if(!contact){toast('Contato não encontrado');return;}A.active=contact;A.messages=[];A.remoteTyping=false;document.body.classList.add('chat-open');$('#main').className='main mobile';$('#main').innerHTML=`<header class="head"><button class="icon back" id="back" type="button">‹</button>${av(contact)}<button class="headProfile" id="headProfile" type="button"><div class="headInfo"><b>${esc(contact.name)}</b><span id="chatPresence">${esc(presenceText(contact))}</span></div></button><button class="callBtn" id="call" type="button" aria-label="Ligar"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8c1.5 2.9 3.7 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1.1-.2 1 .3 2 .5 3 .5.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C11.5 21 3 12.5 3 2.5c0-.6.4-1 1-1H7c.6 0 1 .4 1 1 0 1 .2 2 .5 3 .1.4 0 .8-.2 1.1l-1.7 1.7z"/></svg></button><button class="chatMore" id="chatMore" type="button" aria-label="Mais opções">⋮</button></header><div class="messages" id="msgs"><div class="empty">Carregando conversa...</div></div><form class="composer" id="composer"><label class="attach" aria-label="Enviar foto ou vídeo">＋<input id="mediaMsg" type="file" accept="image/*,video/*" hidden></label><button class="voice" id="voice" type="button" aria-label="Segure para gravar áudio"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"></path></svg></button><input id="msg" placeholder="Digite uma mensagem…" autocomplete="off"><button class="send" type="submit" aria-label="Enviar mensagem">➤</button></form>`;const callBtn=$('#call');if(callBtn)callBtn.onclick=()=>startOutgoingCall(contact);const chatMore=$('#chatMore');if(chatMore)chatMore.onclick=chatMenu;$('#headProfile')?.addEventListener('click',()=>contactProfile(contact.id));const back=$('#back');if(back)back.onclick=()=>{if(A.call.peer&&String(A.call.peer)===String(contact.id))endCall(true);stopRecording(false);sendTyping(false);document.body.classList.remove('chat-open');$('#main').className='main';A.active=null;A.remoteTyping=false;$('#main').innerHTML='<div class="welcome"><div class="mark">L</div><h1>Linka</h1><p>Selecione um contato para começar.</p></div>';renderList()};const form=$('#composer');const input=$('#msg');const mediaInput=$('#mediaMsg');if(input){let lastTypingSent=0;input.addEventListener('input',()=>{if(!A.active)return;const now=Date.now();if(now-lastTypingSent>250){sendTyping(true);lastTypingSent=now}clearTimeout(A.typingTimer);A.typingTimer=setTimeout(()=>sendTyping(false),1400)});input.addEventListener('blur',()=>sendTyping(false))}if(mediaInput)mediaInput.onchange=async()=>{const f=mediaInput.files?.[0];if(!f)return;if(f.size>10*1024*1024){toast('A foto ou vídeo deve ter no máximo 10 MB.');mediaInput.value='';return}const r=new FileReader();r.onload=async()=>{try{const media=String(r.result||'');const type=f.type||'';const m=await api('/api/messages/'+contact.id,{method:'POST',body:{type:'media',media,mediaType:type}});if(A.active&&String(A.active.id)===String(contact.id)){A.messages.push(m);if(!A.chatIds.includes(String(contact.id)))A.chatIds.push(String(contact.id));drawMessages();playSound('send')}}catch(e){toast(e.message)}finally{mediaInput.value=''}};r.readAsDataURL(f)};if(form)form.onsubmit=async e=>{e.preventDefault();sendTyping(false);const input=$('#msg'),text=input.value.trim();if(!text)return;const editing=A.editingMessage;if(editing){try{const updated=await api(`/api/messages/${contact.id}/${editing.id}`,{method:'PATCH',body:{text}});const i=A.messages.findIndex(x=>String(x.id)===String(editing.id));if(i>=0)A.messages[i]=updated;A.editingMessage=null;input.value='';exitEditMode();drawMessages()}catch(e){toast(e.message)}return}input.value='';try{const m=await api('/api/messages/'+contact.id,{method:'POST',body:{text}});if(A.active&&String(A.active.id)===String(contact.id)){A.messages.push(m);if(!A.chatIds.includes(String(contact.id)))A.chatIds.push(String(contact.id));drawMessages();playSound('send')}}catch(e){input.value=text;toast(e.message)}};setupRecorder(contact);applyChatTheme(contact.id);try{A.messages=await api('/api/messages/'+contact.id);drawMessages();try{await api('/api/messages/'+contact.id+'/read',{method:'POST'});}catch{}}catch(e){A.messages=[];drawMessages();toast('Não foi possível carregar a conversa agora. Você ainda pode tentar enviar uma mensagem.')}}
+async function openChat(id){const contact=A.contacts.find(x=>String(x.id)===String(id));if(!contact){toast('Contato não encontrado');return;}A.active=contact;A.messages=[];A.remoteTyping=false;document.body.classList.add('chat-open');$('#main').className='main mobile';$('#main').innerHTML=`<header class="head"><button class="icon back" id="back" type="button">‹</button>${av(contact)}<button class="headProfile" id="headProfile" type="button"><div class="headInfo"><b>${esc(contact.name)}</b><span id="chatPresence">${esc(presenceText(contact))}</span></div></button><button class="callBtn" id="call" type="button" aria-label="Ligar"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8c1.5 2.9 3.7 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1.1-.2 1 .3 2 .5 3 .5.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C11.5 21 3 12.5 3 2.5c0-.6.4-1 1-1H7c.6 0 1 .4 1 1 0 1 .2 2 .5 3 .1.4 0 .8-.2 1.1l-1.7 1.7z"/></svg></button><button class="chatMore" id="chatMore" type="button" aria-label="Mais opções">⋮</button></header><div class="messages" id="msgs"><div class="empty">Carregando conversa...</div></div><form class="composer" id="composer"><label class="attach" aria-label="Enviar foto ou vídeo">＋<input id="mediaMsg" type="file" accept="image/*,video/*" hidden></label><button class="voice" id="voice" type="button" aria-label="Segure para gravar áudio"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"></path></svg></button><input id="msg" placeholder="Digite uma mensagem…" autocomplete="off"><button class="send" type="submit" aria-label="Enviar mensagem">➤</button></form>`;const callBtn=$('#call');if(callBtn)callBtn.onclick=()=>startOutgoingCall(contact);const chatMore=$('#chatMore');if(chatMore)chatMore.onclick=chatMenu;$('#headProfile')?.addEventListener('click',()=>contactProfile(contact.id));const back=$('#back');if(back)back.onclick=()=>{if(A.call.peer&&String(A.call.peer)===String(contact.id))endCall(true);stopRecording(false);sendTyping(false);document.body.classList.remove('chat-open');$('#main').className='main';A.active=null;A.remoteTyping=false;$('#main').innerHTML='<div class="welcome"><div class="mark">L</div><h1>Linka</h1><p>Selecione um contato para começar.</p></div>';renderList()};const form=$('#composer');const input=$('#msg');const mediaInput=$('#mediaMsg');if(input){let lastTypingSent=0;input.addEventListener('input',()=>{if(!A.active)return;const now=Date.now();if(now-lastTypingSent>250){sendTyping(true);lastTypingSent=now}clearTimeout(A.typingTimer);A.typingTimer=setTimeout(()=>sendTyping(false),1400)});input.addEventListener('blur',()=>sendTyping(false))}if(mediaInput)mediaInput.onchange=async()=>{const f=mediaInput.files?.[0];if(!f)return;if(!/^image\/|^video\//.test(f.type)){toast('Escolha uma foto ou vídeo.');mediaInput.value='';return}if(f.size>9*1024*1024){toast('A foto ou vídeo deve ter no máximo 9 MB.');mediaInput.value='';return}try{const prepared=await prepareChatMedia(f);const media=prepared.data;const type=prepared.type;const m=await api('/api/messages/'+contact.id,{method:'POST',body:{type:'media',media,mediaType:type}});if(A.active&&String(A.active.id)===String(contact.id)){A.messages.push(m);if(!A.chatIds.includes(String(contact.id)))A.chatIds.push(String(contact.id));drawMessages();playSound('send')}}catch(e){toast(e.message||'Não foi possível enviar a mídia.')}finally{mediaInput.value=''}};if(form)form.onsubmit=async e=>{e.preventDefault();sendTyping(false);const input=$('#msg'),text=input.value.trim();if(!text)return;const editing=A.editingMessage;if(editing){try{const updated=await api(`/api/messages/${contact.id}/${editing.id}`,{method:'PATCH',body:{text}});const i=A.messages.findIndex(x=>String(x.id)===String(editing.id));if(i>=0)A.messages[i]=updated;A.editingMessage=null;input.value='';exitEditMode();drawMessages()}catch(e){toast(e.message)}return}input.value='';try{const m=await api('/api/messages/'+contact.id,{method:'POST',body:{text}});if(A.active&&String(A.active.id)===String(contact.id)){A.messages.push(m);if(!A.chatIds.includes(String(contact.id)))A.chatIds.push(String(contact.id));drawMessages();playSound('send')}}catch(e){input.value=text;toast(e.message)}};setupRecorder(contact);applyChatTheme(contact.id);try{A.messages=await api('/api/messages/'+contact.id);drawMessages();try{await api('/api/messages/'+contact.id+'/read',{method:'POST'});}catch{}}catch(e){A.messages=[];drawMessages();toast('Não foi possível carregar a conversa agora. Você ainda pode tentar enviar uma mensagem.')}}
 let recorder=null,recordChunks=[],recordTimer=null,recordSeconds=0,recordContact=null,recordStartAt=0;
 let soundCtx=null;
 function playSound(kind='send'){
@@ -181,94 +181,79 @@ function playSound(kind='send'){
     o.type='sine';
     const freq=kind==='receive'?620:kind==='cancel'?180:kind==='delivered'?520:kind==='record'?410:720;
     o.frequency.setValueAtTime(freq,now);o.frequency.exponentialRampToValueAtTime(freq*(kind==='cancel'?.72:kind==='record'?1.35:1.12),now+0.09);
-    g.gain.setValueAtTime(0.0001,now);g.gain.exponentialRampToValueAtTime(0.045,now+0.012);g.gain.exponentialRampToValueAtTime(0.0001,now+0.12);
+    g.gain.setValueAtTime(0.0001,now);g.gain.exponentialRampToValueAtTime(0.085,now+0.012);g.gain.exponentialRampToValueAtTime(0.0001,now+0.12);
     o.connect(g).connect(soundCtx.destination);o.start(now);o.stop(now+0.13);
   }catch{}
 }
 function setupRecorder(contact){
   const b=$('#voice'); if(!b)return;
-  let downX=0, moved=false, activeHold=false, holdTimer=null, pointerId=null, recordingStarted=false;
+  let downX=0,moved=false,activeHold=false,holdTimer=null,pointerId=null,recordingStarted=false,session=null;
   const clearHold=()=>{if(holdTimer){clearTimeout(holdTimer);holdTimer=null;}};
   const begin=e=>{
-    if(e.pointerType==='mouse' && e.button!==0)return;
-    e.preventDefault();
-    clearHold();
-    downX=e.clientX; moved=false; activeHold=true; recordingStarted=false; pointerId=e.pointerId;
-    b.setPointerCapture?.(e.pointerId);
-    const input=$('#msg'); if(input)input.placeholder='Segure para gravar…';
-    // Um toque rápido não inicia a gravação. É necessário manter pressionado.
-    holdTimer=setTimeout(()=>{
+    if(e.pointerType==='mouse'&&e.button!==0)return;
+    e.preventDefault(); clearHold();
+    session={active:true}; activeHold=true; recordingStarted=false; moved=false; downX=e.clientX; pointerId=e.pointerId;
+    try{b.setPointerCapture?.(e.pointerId)}catch{}
+    const input=$('#msg');if(input)input.placeholder='Segure para gravar…';
+    holdTimer=setTimeout(async()=>{
       holdTimer=null;
-      if(!activeHold || moved)return;
-      recordingStarted=true;
-      playSound('record');
-      startRecording(contact);
-    },280);
+      if(!session?.active||!activeHold||moved)return;
+      recordingStarted=true; playSound('record');
+      const ok=await startRecording(contact,session);
+      if(!ok){recordingStarted=false;activeHold=false;session.active=false;resetVoice();}
+    },320);
   };
   const move=e=>{
-    if(!activeHold)return;
+    if(!activeHold||!session)return;
+    e.preventDefault();
     const dx=e.clientX-downX;
-    if(dx < -70){
-      moved=true;
-      clearHold();
-      b.classList.add('canceling');
-      b.textContent='↶';
+    if(dx<=-45){
+      moved=true; session.cancelRequested=true; clearHold(); b.classList.add('canceling');
       const input=$('#msg');if(input)input.placeholder='Solte para cancelar';
       if(recordingStarted)cancelRecording();
-    }else if(dx < 0){
-      b.classList.remove('canceling');
+    }else if(dx<0){
       const input=$('#msg');if(input)input.placeholder='Deslize para cancelar';
     }else if(recordingStarted){
-      b.classList.remove('canceling');
       const input=$('#msg');if(input)input.placeholder='Solte para enviar';
     }
   };
   const end=e=>{
-    if(!activeHold)return;
-    activeHold=false;
-    clearHold();
-    try{if(pointerId!=null)b.releasePointerCapture?.(pointerId)}catch{}
-    pointerId=null;
-    if(!recordingStarted){
-      moved=false;b.classList.remove('canceling');resetVoice();
-      return;
-    }
-    if(moved){cancelRecording();playSound('cancel');}
-    else {stopRecording(true);playSound('send');}
-    moved=false;b.classList.remove('canceling');
+    if(!activeHold||!session)return;
+    e.preventDefault(); activeHold=false; session.active=false; clearHold();
+    try{if(pointerId!=null)b.releasePointerCapture?.(pointerId)}catch{} pointerId=null;
+    if(!recordingStarted){moved=false;b.classList.remove('canceling');resetVoice();session=null;return;}
+    if(moved||session.cancelRequested){cancelRecording();playSound('cancel');}
+    else{stopRecording(true);playSound('send');}
+    moved=false;b.classList.remove('canceling');session=null;
   };
-  b.addEventListener('pointerdown',begin);
-  b.addEventListener('pointermove',move);
-  b.addEventListener('pointerup',end);
-  b.addEventListener('pointercancel',()=>{
-    if(!activeHold)return;
-    activeHold=false;clearHold();pointerId=null;
-    if(recordingStarted){cancelRecording();playSound('cancel');}
-    recordingStarted=false;b.classList.remove('canceling');resetVoice();
-  });
+  b.addEventListener('pointerdown',begin,{passive:false});
+  b.addEventListener('pointermove',move,{passive:false});
+  b.addEventListener('pointerup',end,{passive:false});
+  b.addEventListener('pointercancel',e=>{if(!activeHold)return;e.preventDefault();activeHold=false;if(session)session.active=false;clearHold();if(recordingStarted){cancelRecording();playSound('cancel')}recordingStarted=false;moved=false;b.classList.remove('canceling');session=null;resetVoice()},{passive:false});
   b.addEventListener('click',e=>e.preventDefault());
 }
 function cancelRecording(){
   if(!recorder){resetVoice();return;}
   try{recorder.__cancelled=true;if(recorder.state==='recording'||recorder.state==='paused')recorder.stop();else resetVoice()}catch{resetVoice()}
 }
-async function startRecording(contact){
-  if(recorder)return;
-  if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast('Seu navegador não suporta gravação de áudio');return}
+async function startRecording(contact,sessionToken){
+  if(recorder||!sessionToken?.active)return false;
+  if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast('Seu navegador não suporta gravação de áudio');return false}
+  let stream=null;
   try{
-    const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+    stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+    if(!sessionToken.active||sessionToken.cancelRequested){stream.getTracks().forEach(t=>t.stop());return false}
     const types=['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4'];
     const mime=types.find(x=>MediaRecorder.isTypeSupported(x))||'';
     const r=new MediaRecorder(stream,mime?{mimeType:mime}:undefined);
-    recorder=r;recordChunks=[];recordSeconds=0;recordContact=contact;r.__cancelled=false;
+    recorder=r;recordChunks=[];recordSeconds=0;recordContact=contact;r.__cancelled=false;sessionToken.recorder=r;
     const startedAt=Date.now();
     r.ondataavailable=e=>{if(e.data&&e.data.size)recordChunks.push(e.data)};
     r.onerror=()=>{try{stream.getTracks().forEach(t=>t.stop())}catch{};recordChunks=[];recorder=null;resetVoice();toast('Não foi possível gravar o áudio.')};
     r.onstop=async()=>{
-      const canceled=!!r.__cancelled;
+      const canceled=!!r.__cancelled||!!sessionToken.cancelRequested;
       try{stream.getTracks().forEach(t=>t.stop())}catch{}
-      clearInterval(recordTimer);recordTimer=null;
-      if(recorder===r)recorder=null;
+      clearInterval(recordTimer);recordTimer=null;if(recorder===r)recorder=null;
       const elapsed=Math.max(1,Math.round((Date.now()-startedAt)/1000));
       const duration=Math.max(1,Math.min(90,Math.max(recordSeconds,elapsed)));
       if(canceled){recordChunks=[];resetVoice();return}
@@ -276,27 +261,13 @@ async function startRecording(contact){
       if(!blob.size){toast('Áudio vazio. Segure o microfone por mais tempo.');resetVoice();return}
       if(blob.size>8*1024*1024){toast('Áudio muito grande. Grave por menos tempo.');resetVoice();return}
       const reader=new FileReader();
-      reader.onload=async()=>{
-        try{
-          const data=String(reader.result||'');
-          if(!/^data:audio\//i.test(data)){toast('Áudio inválido. Tente gravar novamente.');return}
-          const m=await api('/api/messages/'+contact.id,{method:'POST',body:{type:'audio',audio:data,duration}});
-          if(A.active&&String(A.active.id)===String(contact.id)){A.messages.push(m);if(!A.chatIds.includes(String(contact.id)))A.chatIds.push(String(contact.id));drawMessages()}
-        }catch(e){toast(e.message||'Não foi possível enviar o áudio.')}
-        finally{resetVoice()}
-      };
-      reader.onerror=()=>{toast('Não foi possível preparar o áudio.');resetVoice()};
-      reader.readAsDataURL(blob);
+      reader.onload=async()=>{try{const data=String(reader.result||'');if(!/^data:audio\\//i.test(data)){toast('Áudio inválido. Tente gravar novamente.');return}const m=await api('/api/messages/'+contact.id,{method:'POST',body:{type:'audio',audio:data,duration}});if(A.active&&String(A.active.id)===String(contact.id)){A.messages.push(m);if(!A.chatIds.includes(String(contact.id)))A.chatIds.push(String(contact.id));drawMessages()}}catch(e){toast(e.message||'Não foi possível enviar o áudio.')}finally{resetVoice()}};
+      reader.onerror=()=>{toast('Não foi possível preparar o áudio.');resetVoice()};reader.readAsDataURL(blob);
     };
-    r.start(250);
-    recordTimer=setInterval(()=>{
-      recordSeconds=Math.max(1,Math.round((Date.now()-startedAt)/1000));
-      const btn=$('#voice');if(btn)btn.textContent=formatRecordTime(recordSeconds);
-      if(recordSeconds>=90)stopRecording(true);
-    },250);
-    const btn=$('#voice');if(btn){btn.classList.add('recording');btn.textContent='0:00'}
-    const input=$('#msg');if(input)input.placeholder='Solte para enviar';
-  }catch(e){recorder=null;toast('Não foi possível acessar o microfone');resetVoice()}
+    r.start(250);recordTimer=setInterval(()=>{recordSeconds=Math.max(1,Math.round((Date.now()-startedAt)/1000));const btn=$('#voice');if(btn)btn.textContent=formatRecordTime(recordSeconds);if(recordSeconds>=90)stopRecording(true)},250);
+    const btn=$('#voice');if(btn){btn.classList.add('recording');btn.textContent='0:00'}const input=$('#msg');if(input)input.placeholder='Solte para enviar';
+    return true;
+  }catch(e){if(stream)try{stream.getTracks().forEach(t=>t.stop())}catch{};recorder=null;toast('Não foi possível acessar o microfone');resetVoice();return false}
 }
 function stopRecording(send=true){if(!recorder)return;try{if(recorder.state==='recording'||recorder.state==='paused'){recorder.__cancelled=!send;recorder.stop()}else resetVoice()}catch{resetVoice()}}
 function resetVoice(){const b=$('#voice');if(b){b.classList.remove('recording','canceling');b.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"></path></svg>';b.setAttribute('aria-label','Segure para gravar áudio')}clearTimeout(window.__linkaHoldTimer);recorder=null;clearInterval(recordTimer);recordTimer=null;recordSeconds=0;recordStartAt=0;const input=$('#msg');if(input)input.placeholder='Digite uma mensagem…'}
@@ -327,6 +298,20 @@ function messageMenu(m){
 function drawMessages(){const box=$('#msgs');if(!box)return;box.innerHTML=A.messages.map(bubble).join('');box.scrollTop=box.scrollHeight;applyChatBg();box.querySelectorAll('[data-msg-menu]').forEach(b=>b.onclick=e=>{e.stopPropagation();const card=b.closest('.bubble');card?.classList.add('show-msg-menu');const m=A.messages.find(x=>String(x.id)===String(b.dataset.msgMenu));if(m)messageMenu(m)});box.querySelectorAll('.bubble').forEach(card=>{let holdTimer=null,held=false;const start=e=>{if(e.target.closest('button,a,audio'))return;held=false;clearTimeout(holdTimer);holdTimer=setTimeout(()=>{held=true;card.classList.add('show-msg-menu');},520)};const cancel=()=>{clearTimeout(holdTimer);holdTimer=null};card.addEventListener('pointerdown',start);card.addEventListener('pointerup',cancel);card.addEventListener('pointercancel',cancel);card.addEventListener('pointerleave',cancel);card.addEventListener('contextmenu',e=>{e.preventDefault();card.classList.add('show-msg-menu')});});box.querySelectorAll('.audioBubble').forEach(card=>{const audio=card.querySelector('.audioEl'),play=card.querySelector('.audioPlay'),progress=card.querySelector('.audioProgress'),cur=card.querySelector('.audioCurrent'),dur=card.querySelector('.audioDuration');const fmt=v=>{v=Math.max(0,Math.floor(v||0));return Math.floor(v/60)+':'+String(v%60).padStart(2,'0')};audio.onloadedmetadata=()=>{if(Number.isFinite(audio.duration)&&audio.duration>0)dur.textContent=fmt(audio.duration);};audio.ontimeupdate=()=>{cur.textContent=fmt(audio.currentTime);progress.style.width=audio.duration?((audio.currentTime/audio.duration)*100)+'%':'0%'};audio.onended=()=>{play.textContent='▶';progress.style.width='0%';cur.textContent='0:00'};play.onclick=()=>{document.querySelectorAll('.audioEl').forEach(a=>{if(a!==audio)a.pause()});if(audio.paused){audio.play().then(()=>play.textContent='❚❚').catch(()=>toast('Não foi possível reproduzir o áudio'))}else{audio.pause();play.textContent='▶'}}})}
 function refreshPresence(){A.contacts.forEach(c=>{document.querySelectorAll('[data-presence]').forEach(el=>{if(String(el.dataset.presence)===String(c.id))el.textContent=presenceText(c)})});if(A.active){const c=A.contacts.find(x=>String(x.id)===String(A.active.id));if(c){A.active=c;const el=$('#chatPresence');if(el)el.textContent=presenceText(c)}}}
 function addContactModal(){modal(`<h2>Adicionar contato</h2><p class="muted">Procure pelo nome ou pelo usuário. Não existe código de sala.</p><input id="findq" placeholder="Ex.: @gabriel"><div id="results"></div><button class="danger" data-close>Fechar</button>`);$('#findq').oninput=async e=>{const q=e.target.value.trim();if(q.length<2){$('#results').innerHTML='';return}try{const xs=await api('/api/users?q='+encodeURIComponent(q));const exact=xs.filter(u=>String(u.username).toLowerCase()===q.replace(/^@/,'').toLowerCase()||String(u.name).toLowerCase()===q.toLowerCase());for(const u of exact){if(!A.contacts.some(c=>String(c.id)===String(u.id))){try{await api('/api/contacts/'+u.id,{method:'POST'});await loadContacts()}catch{}}}$('#results').innerHTML=xs.length?xs.map(u=>`<div class="result">${av(u)}<div><b>${esc(u.name)}</b><span>@${esc(u.username)}</span></div><button data-add="${u.id}">${A.contacts.some(c=>String(c.id)===String(u.id))?'Adicionado':'Adicionar'}</button></div>`).join(''):'<p class="muted">Nenhum usuário encontrado.</p>';document.querySelectorAll('[data-add]').forEach(b=>b.onclick=async()=>{try{await api('/api/contacts/'+b.dataset.add,{method:'POST'});await loadContacts();$('#modal').innerHTML='';renderList();toast('Contato adicionado')}catch(e){toast(e.message)}})}catch(e){toast(e.message)}}}
+async function prepareChatMedia(file){
+  if(file.type.startsWith('video/')){
+    const data=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>reject(Error('Não foi possível ler o vídeo.'));r.readAsDataURL(file)});
+    return {data:String(data||''),type:file.type};
+  }
+  const data=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>reject(Error('Não foi possível ler a foto.'));r.readAsDataURL(file)});
+  try{
+    const img=await new Promise((resolve,reject)=>{const x=new Image();x.onload=()=>resolve(x);x.onerror=()=>reject(Error('Foto incompatível.'));x.src=data});
+    const max=1280,scale=Math.min(1,max/Math.max(img.naturalWidth||img.width,img.naturalHeight||img.height));
+    const w=Math.max(1,Math.round((img.naturalWidth||img.width)*scale)),h=Math.max(1,Math.round((img.naturalHeight||img.height)*scale));
+    const c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(img,0,0,w,h);
+    return {data:c.toDataURL('image/jpeg',0.78),type:'image/jpeg'};
+  }catch{return {data:String(data||''),type:file.type||'image/jpeg'}}
+}
 async function prepareProfilePhoto(file){if(!file)return '';if(!file.type.startsWith('image/'))throw Error('Escolha uma imagem válida.');const data=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>reject(Error('Não foi possível ler a foto.'));r.readAsDataURL(file)});try{const img=await new Promise((resolve,reject)=>{const x=new Image();x.onload=()=>resolve(x);x.onerror=()=>reject(Error('Este formato de foto não é compatível com este navegador.'));x.src=data});const max=720;const scale=Math.min(1,max/Math.max(img.naturalWidth||img.width,img.naturalHeight||img.height));const w=Math.max(1,Math.round((img.naturalWidth||img.width)*scale));const h=Math.max(1,Math.round((img.naturalHeight||img.height)*scale));const c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(img,0,0,w,h);return c.toDataURL('image/jpeg',0.82)}catch{return data}}
 function profileModal(){modal(`<h2>Meu perfil</h2><div class="center">${av(A.user,true)}</div><label>Foto <input id="photo" type="file" accept="image/jpeg,image/png,image/webp,image/*"></label><label>Nome<input id="name" value="${esc(A.user.name)}"></label><label>Sobre<input id="status" value="${esc(A.user.status||'Disponível')}"></label><button class="primary" id="save">Salvar</button><button class="danger" data-close>Cancelar</button>`);let selectedPhoto=A.user.photo||'';$('#photo').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{selectedPhoto=await prepareProfilePhoto(f);A.user.photo=selectedPhoto;$('.card .avatar.big')?.replaceWith(document.querySelector('.avatar.big')||$('.avatar.big'));}catch(err){toast(err.message)}};$('#save').onclick=async()=>{try{A.user=(await api('/api/me',{method:'PUT',body:{name:$('#name').value,status:$('#status').value,photo:selectedPhoto}})).user;$('#modal').innerHTML='';render()}catch(e){toast(e.message)}}}
 async function loadNotifications(){try{A.notifications=await api('/api/notifications')}catch{A.notifications=[]}}

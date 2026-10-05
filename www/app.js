@@ -490,11 +490,11 @@ function markCallConnected(){
 
 function showCallOverlay(name,photo,status,incoming=false){
   ensureCallUi();const o=$('#callOverlay');o.hidden=false;
+  const accept=$('#callAccept'),decline=$('#callDecline'),end=$('#callEnd');
+  accept.disabled=false;decline.disabled=false;
+  accept.hidden=!incoming;decline.hidden=false;end.hidden=true;
   $('#callAvatar').innerHTML=photo?`<img src="${esc(photo)}">`:esc((name||'?')[0].toUpperCase());
   $('#callName').textContent=name||'Chamada';$('#callStatus').textContent=status||'Chamada';
-  $('#callAccept').hidden=!incoming;
-  $('#callDecline').hidden=false;
-  $('#callEnd').hidden=true;
 }
 function hideCallOverlay(){const o=$('#callOverlay');if(o)o.hidden=true}
 
@@ -561,10 +561,12 @@ async function acceptIncomingCall(){
   stopOutgoingRing();
   if(!A.call.id||!A.call.peer)return;
   if(A.call.mode==='video'){return acceptIncomingVideoCall()}
+  if(A.call.accepted)return;
+  const callId=A.call.id,peer=A.call.peer;
   try{
-    $('#callAccept').disabled=true;$('#callDecline').disabled=true;$('#callStatus').textContent='Conectando áudio…';
-    await setupAudioMedia();setupAudioPeer();A.call.accepted=true;
-    const ok=await sendSignalReliable(A.call.peer,{type:'call-audio-ready',callId:A.call.id});
+    $('#callAccept').disabled=true;$('#callStatus').textContent='Conectando áudio…';A.call.accepted=true;
+    await setupAudioMedia();setupAudioPeer();
+    const ok=await sendSignalReliable(peer,{type:'call-audio-ready',callId});
     if(!ok)throw new Error('sinalização indisponível');
   }catch(e){
     console.error(e);toast('Não foi possível acessar o microfone');
@@ -656,7 +658,15 @@ async function beginVideoOffer(){
   const offer=await pc.createOffer({offerToReceiveAudio:true,offerToReceiveVideo:true});await pc.setLocalDescription(offer);const ok=await sendSignalReliable(A.call.peer,{type:'call-video-offer',callId:A.call.id,offer:pc.localDescription});if(!ok)throw new Error('sinalização indisponível');
 }
 async function acceptIncomingVideoCall(){
-  try{showVideoStage();$('#callAccept').disabled=true;$('#callDecline').disabled=true;$('#callStatus').textContent='Conectando vídeo…';await setupVideoMedia();const pc=setupVideoPeer();A.call.accepted=true;const ok=await sendSignalReliable(A.call.peer,{type:'call-video-ready',callId:A.call.id});if(!ok)throw new Error('sinalização indisponível')}catch(e){console.error(e);toast('Não foi possível acessar câmera e microfone');if(A.call.peer)sendSignal(A.call.peer,{type:'call-reject',callId:A.call.id});endCall(false)}}
+  if(!A.call.id||!A.call.peer||A.call.accepted)return;
+  const callId=A.call.id,peer=A.call.peer;
+  try{showVideoStage();$('#callAccept').disabled=true;$('#callStatus').textContent='Conectando vídeo…';
+    A.call.accepted=true;
+    await setupVideoMedia();setupVideoPeer();
+    const ok=await sendSignalReliable(peer,{type:'call-video-ready',callId});
+    if(!ok)throw new Error('sinalização indisponível');
+  }catch(e){console.error(e);toast(e?.name==='NotAllowedError'?'Permita câmera e microfone para atender a chamada':'Não foi possível conectar a chamada de vídeo');
+    if(peer)sendSignal(peer,{type:'call-reject',callId});endCall(false)}}
 async function handleVideoReady(d){if(d?.callId!==A.call.id||A.call.mode!=='video')return;try{await beginVideoOffer()}catch(e){console.error(e);toast('Não foi possível iniciar o vídeo');endCall(true)}}
 async function handleVideoOffer(d){if(d?.callId!==A.call.id||A.call.mode!=='video'||!A.call.accepted)return;try{const stream=await setupVideoMedia();const pc=setupVideoPeer();stream.getTracks().forEach(t=>{if(!pc.getSenders().some(s=>s.track===t))pc.addTrack(t,stream)});await pc.setRemoteDescription(d.offer);for(const c of A.call.videoRemoteIceQueue.splice(0))try{await pc.addIceCandidate(c)}catch{}const answer=await pc.createAnswer();await pc.setLocalDescription(answer);const ok=await sendSignalReliable(d.from,{type:'call-video-answer',callId:d.callId,answer:pc.localDescription});if(!ok)throw new Error('sinalização indisponível')}catch(e){console.error(e);toast('Falha ao conectar o vídeo');endCall(true)}}
 async function handleVideoAnswer(d){if(d?.callId!==A.call.id||!A.call.videoPc)return;try{await A.call.videoPc.setRemoteDescription(d.answer);for(const c of A.call.videoRemoteIceQueue.splice(0))try{await A.call.videoPc.addIceCandidate(c)}catch{}}catch(e){console.error(e);toast('Falha ao finalizar a chamada de vídeo');endCall(true)}}
@@ -676,6 +686,7 @@ function handleCallRoomInvite(d){
 }
 function endCall(notifyPeer=false){
   stopOutgoingRing();
+  try{$('#callAccept').disabled=false;$('#callDecline').disabled=false;$('#callMute').classList.remove('muted')}catch{}
   const peer=A.call.peer,id=A.call.id;
   const wasConnected=!!A.call.connectedAt;
   if(notifyPeer&&peer&&id)sendSignal(peer,{type:'call-end',callId:id,mode:A.call.mode});

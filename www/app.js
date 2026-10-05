@@ -313,7 +313,7 @@ function bubble(m){
   if(m.deletedForEveryone)return `<div class="bubble ${mine?'mine':''} deleted" data-mid="${esc(m.id)}"><span>Esta mensagem foi apagada</span><time>${time}${tick}</time>${menu}</div>`;
   let body='';
   if(m.type==='call'){const icon=m.mode==='video'?'▣':'☎';body=`<div class="callMsgIcon">${icon}</div><div><b>${m.status==='missed'?'Chamada perdida':mine?'Chamada efetuada':'Chamada recebida'}</b><small>${esc(m.mode==='video'?'Vídeo':'Áudio')}${Number(m.duration)>0?' · '+formatCallDuration(Number(m.duration)):''}</small></div>`}
-  else if(m.type==='audio'&&m.audio)body=`<audio class="audioEl" preload="metadata" src="${esc(m.audio)}"></audio><button class="audioPlay" type="button" data-audio-play="${esc(m.id)}">▶</button><div class="audioInfo"><div class="audioTrack"><span class="audioProgress"></span></div><div class="audioTimes"><span class="audioCurrent">0:00</span><span class="audioDuration">${Number(m.duration)>0?formatRecordTime(Number(m.duration)):'0:00'}</span></div></div>`;
+  else if(m.type==='audio'&&m.audio)body=`<div class="audioBubble"><audio class="audioEl" preload="metadata" src="${esc(m.audio)}"></audio><button class="audioPlay" type="button" data-audio-play="${esc(m.id)}" aria-label="Reproduzir áudio">▶</button><div class="audioInfo"><div class="audioTrack"><span class="audioProgress"></span></div><div class="audioTimes"><span class="audioCurrent">0:00</span><span class="audioDuration">${Number(m.duration)>0?formatRecordTime(Number(m.duration)):'0:00'}</span></div></div></div>`;
   else if(m.type==='file')body=`<button class="fileCard" type="button" data-file="${esc(m.id)}"><span class="fileIcon">📎</span><span><b>${esc(m.fileName||'Arquivo')}</b><small>${esc(m.fileType||'Arquivo')} · ${Math.max(1,Math.round((Number(m.fileSize)||0)/1024))} KB</small></span></button>`;
   else if(m.type==='media'&&(m.mediaUrl||m.media)){const src=(m.mediaUrl&&A.token)?m.mediaUrl+'?token='+encodeURIComponent(A.token):(m.mediaUrl||m.media);body=String(m.mediaType||'').startsWith('video/')?`<video class="chatMedia" controls playsinline preload="metadata" src="${esc(src)}"></video>`:`<img class="chatMedia" src="${esc(src)}" alt="Foto enviada" loading="eager">`}
   else body=`<span>${esc(m.text||'')}${m.editedAt?' <small>(editada)</small>':''}</span>`;
@@ -337,7 +337,7 @@ function messageMenu(m){
  document.querySelectorAll('[data-forward-msg]').forEach(b=>b.onclick=()=>{modal(`<div class="forwardSheet"><h3>Encaminhar para</h3>${A.contacts.filter(c=>String(c.id)!==String(A.active?.id)).map(c=>`<button class="menurow" data-forward-target="${esc(c.id)}">${av(c)}<span>${esc(c.name)}</span></button>`).join('')||'<p class="muted">Nenhum outro contato.</p>'}<button class="danger" data-close>Cancelar</button></div>`);document.querySelectorAll('[data-forward-target]').forEach(q=>q.onclick=async()=>{try{const u=await api(`/api/messages/${A.active.id}/${m.id}/forward`,{method:'POST',body:{targetId:q.dataset.forwardTarget}});$('#modal').innerHTML='';toast('Mensagem encaminhada')}catch(e){toast(e.message)}})});
  document.querySelectorAll('[data-msg-delete]').forEach(b=>b.onclick=async()=>{try{const updated=await api(`/api/messages/${A.active.id}/${m.id}`,{method:'DELETE',body:{mode:b.dataset.mode}});if(b.dataset.mode==='me')A.messages=A.messages.filter(x=>x.id!==m.id);else{const i=A.messages.findIndex(x=>x.id===m.id);if(i>=0)A.messages[i]=updated}$('#modal').innerHTML='';drawMessages()}catch(e){toast(e.message)}});
 }
-function drawMessages(){const box=$('#msgs');if(!box)return;box.innerHTML=A.messages.map(bubble).join('');box.scrollTop=box.scrollHeight;applyChatBg();box.querySelectorAll('[data-file]').forEach(b=>b.onclick=async()=>{try{window.open('/api/file/'+encodeURIComponent(b.dataset.file)+'?token='+encodeURIComponent(A.token),'_blank')}catch{}});box.querySelectorAll('[data-msg-menu]').forEach(b=>b.onclick=e=>{e.stopPropagation();const card=b.closest('.bubble');card?.classList.add('show-msg-menu');const m=A.messages.find(x=>String(x.id)===String(b.dataset.msgMenu));if(m)messageMenu(m)});box.querySelectorAll('.bubble').forEach(card=>{let holdTimer=null,held=false;const start=e=>{if(e.target.closest('button,a,audio'))return;held=false;clearTimeout(holdTimer);holdTimer=setTimeout(()=>{held=true;card.classList.add('show-msg-menu');},520)};const cancel=()=>{clearTimeout(holdTimer);holdTimer=null};card.addEventListener('pointerdown',start);card.addEventListener('pointerup',cancel);card.addEventListener('pointercancel',cancel);card.addEventListener('pointerleave',cancel);card.addEventListener('contextmenu',e=>{e.preventDefault();card.classList.add('show-msg-menu')});});box.querySelectorAll('.audioBubble').forEach(card=>{const audio=card.querySelector('.audioEl'),play=card.querySelector('.audioPlay'),progress=card.querySelector('.audioProgress'),cur=card.querySelector('.audioCurrent'),dur=card.querySelector('.audioDuration');const fmt=v=>{v=Math.max(0,Math.floor(v||0));return Math.floor(v/60)+':'+String(v%60).padStart(2,'0')};audio.onloadedmetadata=()=>{if(Number.isFinite(audio.duration)&&audio.duration>0)dur.textContent=fmt(audio.duration);};audio.ontimeupdate=()=>{cur.textContent=fmt(audio.currentTime);progress.style.width=audio.duration?((audio.currentTime/audio.duration)*100)+'%':'0%'};audio.onended=()=>{play.textContent='▶';progress.style.width='0%';cur.textContent='0:00'};play.onclick=()=>{document.querySelectorAll('.audioEl').forEach(a=>{if(a!==audio)a.pause()});if(audio.paused){audio.play().then(()=>play.textContent='❚❚').catch(()=>toast('Não foi possível reproduzir o áudio'))}else{audio.pause();play.textContent='▶'}}});box.querySelectorAll('.mediaBubble .chatMedia').forEach(media=>{media.addEventListener('click',e=>{if(media.tagName==='VIDEO' && e.target.closest('video') && e.offsetX>0){if(media.controls && e.detail===1){/* still open on tap; controls remain available in viewer */}}const src=media.currentSrc||media.src;if(!src)return;openMediaViewer(src,media.tagName==='VIDEO',media.getAttribute('alt')||'Mídia');e.preventDefault();e.stopPropagation()})});box.querySelectorAll('.audioBubble').forEach(card=>{const audio=card.querySelector('.audioEl'),play=card.querySelector('.audioPlay'),progress=card.querySelector('.audioProgress'),cur=card.querySelector('.audioCurrent'),dur=card.querySelector('.audioDuration');const fmt=v=>{v=Math.max(0,Math.floor(v||0));return Math.floor(v/60)+':'+String(v%60).padStart(2,'0')};audio.onloadedmetadata=()=>{if(Number.isFinite(audio.duration)&&audio.duration>0)dur.textContent=fmt(audio.duration);};audio.ontimeupdate=()=>{cur.textContent=fmt(audio.currentTime);progress.style.width=audio.duration?((audio.currentTime/audio.duration)*100)+'%':'0%'};audio.onended=()=>{play.textContent='▶';progress.style.width='0%';cur.textContent='0:00'};play.onclick=()=>{document.querySelectorAll('.audioEl').forEach(a=>{if(a!==audio)a.pause()});if(audio.paused){audio.play().then(()=>play.textContent='❚❚').catch(()=>toast('Não foi possível reproduzir o áudio'))}else{audio.pause();play.textContent='▶'}}})}
+function drawMessages(){const box=$('#msgs');if(!box)return;box.innerHTML=A.messages.map(bubble).join('');box.scrollTop=box.scrollHeight;if(A.active)applyChatTheme(A.active.id);else applyChatBg();box.querySelectorAll('[data-file]').forEach(b=>b.onclick=async()=>{try{window.open('/api/file/'+encodeURIComponent(b.dataset.file)+'?token='+encodeURIComponent(A.token),'_blank')}catch{}});box.querySelectorAll('[data-msg-menu]').forEach(b=>b.onclick=e=>{e.stopPropagation();const card=b.closest('.bubble');card?.classList.add('show-msg-menu');const m=A.messages.find(x=>String(x.id)===String(b.dataset.msgMenu));if(m)messageMenu(m)});box.querySelectorAll('.bubble').forEach(card=>{let holdTimer=null,held=false;const start=e=>{if(e.target.closest('button,a,audio'))return;held=false;clearTimeout(holdTimer);holdTimer=setTimeout(()=>{held=true;card.classList.add('show-msg-menu');},520)};const cancel=()=>{clearTimeout(holdTimer);holdTimer=null};card.addEventListener('pointerdown',start);card.addEventListener('pointerup',cancel);card.addEventListener('pointercancel',cancel);card.addEventListener('pointerleave',cancel);card.addEventListener('contextmenu',e=>{e.preventDefault();card.classList.add('show-msg-menu')});});box.querySelectorAll('.audioBubble').forEach(card=>{const audio=card.querySelector('.audioEl'),play=card.querySelector('.audioPlay'),progress=card.querySelector('.audioProgress'),cur=card.querySelector('.audioCurrent'),dur=card.querySelector('.audioDuration');const fmt=v=>{v=Math.max(0,Math.floor(v||0));return Math.floor(v/60)+':'+String(v%60).padStart(2,'0')};audio.onloadedmetadata=()=>{if(Number.isFinite(audio.duration)&&audio.duration>0)dur.textContent=fmt(audio.duration);};audio.ontimeupdate=()=>{cur.textContent=fmt(audio.currentTime);progress.style.width=audio.duration?((audio.currentTime/audio.duration)*100)+'%':'0%'};audio.onended=()=>{play.textContent='▶';progress.style.width='0%';cur.textContent='0:00'};play.onclick=()=>{document.querySelectorAll('.audioEl').forEach(a=>{if(a!==audio)a.pause()});if(audio.paused){audio.play().then(()=>play.textContent='❚❚').catch(()=>toast('Não foi possível reproduzir o áudio'))}else{audio.pause();play.textContent='▶'}}});box.querySelectorAll('.mediaBubble .chatMedia').forEach(media=>{media.addEventListener('click',e=>{if(media.tagName==='VIDEO' && e.target.closest('video') && e.offsetX>0){if(media.controls && e.detail===1){/* still open on tap; controls remain available in viewer */}}const src=media.currentSrc||media.src;if(!src)return;openMediaViewer(src,media.tagName==='VIDEO',media.getAttribute('alt')||'Mídia');e.preventDefault();e.stopPropagation()})});box.querySelectorAll('.audioBubble').forEach(card=>{const audio=card.querySelector('.audioEl'),play=card.querySelector('.audioPlay'),progress=card.querySelector('.audioProgress'),cur=card.querySelector('.audioCurrent'),dur=card.querySelector('.audioDuration');const fmt=v=>{v=Math.max(0,Math.floor(v||0));return Math.floor(v/60)+':'+String(v%60).padStart(2,'0')};audio.onloadedmetadata=()=>{if(Number.isFinite(audio.duration)&&audio.duration>0)dur.textContent=fmt(audio.duration);};audio.ontimeupdate=()=>{cur.textContent=fmt(audio.currentTime);progress.style.width=audio.duration?((audio.currentTime/audio.duration)*100)+'%':'0%'};audio.onended=()=>{play.textContent='▶';progress.style.width='0%';cur.textContent='0:00'};play.onclick=()=>{document.querySelectorAll('.audioEl').forEach(a=>{if(a!==audio)a.pause()});if(audio.paused){audio.play().then(()=>play.textContent='❚❚').catch(()=>toast('Não foi possível reproduzir o áudio'))}else{audio.pause();play.textContent='▶'}}})}
 function openMediaViewer(src,isVideo=false,alt='Mídia'){
   let v=$('#mediaViewer');
   if(!v){v=document.createElement('div');v.id='mediaViewer';v.className='mediaViewer';v.innerHTML='<button class="mediaViewerClose" type="button" aria-label="Fechar">×</button><div class="mediaViewerStage"></div>';document.body.appendChild(v);v.addEventListener('click',e=>{if(e.target===v||e.target.classList.contains('mediaViewerStage'))closeMediaViewer()});v.querySelector('.mediaViewerClose').onclick=closeMediaViewer}
@@ -379,7 +379,7 @@ function backgroundModal(){modal(`<h2>Fundo das conversas</h2><p class="muted">E
 function chatThemeKey(id){return 'linka_chat_theme_'+String(id)}
 function getChatTheme(id){try{const x=JSON.parse(localStorage.getItem(chatThemeKey(id))||'{}');return x.bg||''}catch{return ''}}
 function setChatTheme(id,x){try{localStorage.setItem(chatThemeKey(id),JSON.stringify(x))}catch{}}
-function applyChatTheme(id){const box=$('#msgs');if(!box)return;let theme={};try{theme=JSON.parse(localStorage.getItem(chatThemeKey(id))||'{}')}catch{};box.style.setProperty('--chat-font-size',(theme.font||16)+'px');box.dataset.bubbleStyle=theme.style||'default';const bg=getChatTheme(id);box.style.background=bg&&bg.startsWith('data:')?`url(${bg}) center/cover fixed, radial-gradient(circle at top,#14232a,#0b141a 60%)`:bg==='gradient'?'linear-gradient(135deg,#081b22,#162a31)':bg==='dots'?'radial-gradient(circle at 20px 20px,#ffffff18 2px,transparent 3px) 0 0/32px 32px,#0b141a':'radial-gradient(circle at top,#14232a,#0b141a 60%)'}
+function applyChatTheme(id){const box=$('#msgs');if(!box)return;let theme={};try{theme=JSON.parse(localStorage.getItem(chatThemeKey(id))||'{}')}catch{};box.style.setProperty('--chat-font-size',(theme.font||16)+'px');box.dataset.bubbleStyle=theme.style||'default';const light=document.body.classList.contains('light-theme');const bg=getChatTheme(id);const fallback=light?'linear-gradient(180deg,#e9edef,#f5f7f8)':'radial-gradient(circle at top,#14232a,#0b141a 60%)';box.style.background=bg&&bg.startsWith('data:')?`url(${bg}) center/cover fixed, ${fallback}`:bg==='gradient'?(light?'linear-gradient(135deg,#dfeeea,#f7fbfa)':'linear-gradient(135deg,#081b22,#162a31)'):bg==='dots'?(light?'radial-gradient(circle at 20px 20px,#17212622 2px,transparent 3px) 0 0/32px 32px,#eef2f3':'radial-gradient(circle at 20px 20px,#ffffff18 2px,transparent 3px) 0 0/32px 32px,#0b141a'):fallback}
 function chatThemeModal(){if(!A.active)return;const id=A.active.id;const cur=(()=>{try{return JSON.parse(localStorage.getItem(chatThemeKey(id))||'{}')}catch{return {}}})();modal(`<h2>Estilo da conversa</h2><div class="bggrid"><button class="bgpick" data-chat-bg="">Padrão</button><button class="bgpick" data-chat-bg="gradient">Escuro</button><button class="bgpick" data-chat-bg="dots">Pontos</button></div><label>Cor dos balões<select id="bubbleStyle"><option value="default">Padrão</option><option value="blue">Azul</option><option value="purple">Roxo</option><option value="pink">Rosa</option></select></label><label>Tamanho da fonte<select id="chatFont"><option value="14">Pequeno</option><option value="16">Normal</option><option value="18">Grande</option><option value="20">Muito grande</option></select></label><label>Imagem de fundo<input id="chatWall" type="file" accept="image/*"></label><button class="primary" id="saveChatTheme">Salvar</button><button class="danger" data-close>Cancelar</button>`);$('#bubbleStyle').value=cur.style||'default';$('#chatFont').value=String(cur.font||16);let chosen=cur.bg||'';document.querySelectorAll('[data-chat-bg]').forEach(b=>b.onclick=()=>chosen=b.dataset.chatBg);$('#chatWall').onchange=e=>{const f=e.target.files?.[0];if(f){const r=new FileReader();r.onload=()=>chosen=r.result;r.readAsDataURL(f)}};$('#saveChatTheme').onclick=()=>{const x={bg:chosen,style:$('#bubbleStyle').value,font:Number($('#chatFont').value)};setChatTheme(id,x);$('#modal').innerHTML='';applyChatTheme(id);toast('Estilo da conversa salvo')}}
 function chatMenu(){if(!A.active)return;const id=A.active.id;modal(`<h2>Opções da conversa</h2><button class="menurow" id="clearChat">Limpar conversa</button><button class="menurow" id="chatTheme">Tema da conversa</button><button class="danger" data-close>Cancelar</button>`);$('#clearChat').onclick=async()=>{if(!confirm('Limpar todas as mensagens desta conversa?'))return;try{await api('/api/messages/'+id,{method:'DELETE'});A.messages=[];$('#modal').innerHTML='';drawMessages();toast('Conversa limpa')}catch(e){toast(e.message)}};$('#chatTheme').onclick=()=>chatThemeModal()}
 async function setupNotifications(opts={}){
@@ -598,14 +598,55 @@ function playLiveAudio(b64){
   src.start(A.call.playTime);
   A.call.playTime+=Math.min(buffer.duration,0.28);
 }
-async function setupAudioMedia(){return startLiveAudio().then(()=>A.call.stream)}
-function setupAudioPeer(){return null}
+function audioIceServers(){return videoIceServers()}
+async function setupAudioMedia(){
+  if(A.call.audioLocal)return A.call.audioLocal;
+  if(!navigator.mediaDevices?.getUserMedia)throw new Error('Microfone não disponível neste dispositivo');
+  const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,channelCount:1},video:false});
+  A.call.audioLocal=stream;A.call.stream=stream;
+  return stream;
+}
+function setupAudioPeer(){
+  if(A.call.audioPc)return A.call.audioPc;
+  const pc=new RTCPeerConnection({iceServers:audioIceServers(),bundlePolicy:'max-bundle'});
+  A.call.audioPc=pc;
+  pc.onicecandidate=e=>{if(e.candidate&&A.call.peer&&A.call.id)sendSignal(A.call.peer,{type:'call-audio-ice',callId:A.call.id,candidate:e.candidate})};
+  pc.ontrack=e=>{
+    if(!e.streams[0])return;
+    A.call.audioRemote=e.streams[0];
+    const a=$('#callRemoteAudio');
+    if(a){a.srcObject=e.streams[0];a.autoplay=true;a.playsInline=true;a.play().catch(()=>{})}
+  };
+  pc.onconnectionstatechange=()=>{
+    if(pc.connectionState==='connected')markCallConnected();
+    else if(pc.connectionState==='failed'){
+      $('#callStatus').textContent='Falha na conexão de áudio';
+      setTimeout(()=>{if(A.call.audioPc===pc)endCall(true)},900);
+    }else if(pc.connectionState==='disconnected'){
+      $('#callStatus').textContent='Reconectando áudio…';
+      setTimeout(()=>{if(A.call.audioPc===pc&&pc.connectionState==='disconnected')pc.restartIce?.()},1000);
+    }
+  };
+  pc.oniceconnectionstatechange=()=>{
+    if(pc.iceConnectionState==='checking')$('#callStatus').textContent='Conectando áudio…';
+    if(pc.iceConnectionState==='failed')$('#callStatus').textContent='Rede não conseguiu conectar o áudio';
+  };
+  return pc;
+}
+async function addAudioTracks(){
+  const stream=await setupAudioMedia(),pc=setupAudioPeer();
+  stream.getTracks().forEach(t=>{if(!pc.getSenders().some(s=>s.track===t))pc.addTrack(t,stream)});
+  return pc;
+}
 async function startOutgoingAudioOffer(){
-  await startLiveAudio();
-  A.call.liveStarted=true;
+  const pc=await addAudioTracks();
   $('#callStatus').textContent='Conectando áudio…';
-  const ok=await sendSignalReliable(A.call.peer,{type:'call-live-start',callId:A.call.id});
+  const offer=await pc.createOffer({offerToReceiveAudio:true});
+  await pc.setLocalDescription(offer);
+  const ok=await sendSignalReliable(A.call.peer,{type:'call-audio-offer',callId:A.call.id,offer:pc.localDescription});
   if(!ok)throw new Error('sinalização indisponível');
+  const callId=A.call.id;
+  setTimeout(()=>{if(A.call.id===callId&&!A.call.connectedAt&&A.call.audioPc)$('#callStatus').textContent='Áudio sem conexão de rede'},15000);
 }
 async function acceptIncomingCall(){
   stopOutgoingRing();
@@ -615,9 +656,8 @@ async function acceptIncomingCall(){
   const callId=A.call.id,peer=A.call.peer;
   try{
     $('#callAccept').disabled=true;$('#callStatus').textContent='Conectando áudio…';A.call.accepted=true;
-    await startLiveAudio();
-    A.call.liveStarted=true;
-    const ok=await sendSignalReliable(peer,{type:'call-live-ready',callId});
+    await setupAudioMedia();
+    const ok=await sendSignalReliable(peer,{type:'call-audio-ready',callId});
     if(!ok)throw new Error('sinalização indisponível');
   }catch(e){console.error(e);toast(e?.name==='NotAllowedError'?'Permita o microfone para atender a chamada':'Não foi possível conectar a chamada de voz');if(peer)sendSignal(peer,{type:'call-reject',callId});endCall(false)}
 }
@@ -625,24 +665,28 @@ async function handleAudioReady(d){
   if(d?.callId!==A.call.id||A.call.mode!=='audio')return;
   try{await startOutgoingAudioOffer()}catch(e){console.error(e);toast('Não foi possível iniciar a chamada de voz');endCall(true)}
 }
-async function handleAudioOffer(){return}
-async function handleAudioAnswer(){return}
-async function handleAudioIce(){return}
-async function handleLiveReady(d){
-  if(d?.callId!==A.call.id||!A.call.accepted)return;
+async function handleAudioOffer(d){
+  if(d?.callId!==A.call.id||A.call.mode!=='audio'||!A.call.accepted)return;
   try{
-    if(!A.call.liveStarted){await startLiveAudio();A.call.liveStarted=true;}
-    markCallConnected();
-    sendSignalReliable(d.from,{type:'call-live-start',callId:d.callId});
-  }catch(e){console.error(e);toast('Não foi possível acessar o microfone');sendSignal(d.from,{type:'call-reject',callId:d.callId});endCall(false)}
+    const pc=await addAudioTracks();
+    await pc.setRemoteDescription(d.offer);
+    for(const c of A.call.audioRemoteIceQueue.splice(0))try{await pc.addIceCandidate(c)}catch{}
+    const answer=await pc.createAnswer();await pc.setLocalDescription(answer);
+    const ok=await sendSignalReliable(d.from,{type:'call-audio-answer',callId:d.callId,answer:pc.localDescription});
+    if(!ok)throw new Error('sinalização indisponível');
+  }catch(e){console.error(e);toast('Falha ao conectar o áudio');endCall(true)}
 }
-async function handleLiveStart(d){
-  if(!d?.callId||d.callId!==A.call.id||!A.call.accepted)return;
-  try{await startLiveAudio();A.call.liveStarted=true;markCallConnected();sendSignalReliable(d.from,{type:'call-live-ready',callId:d.callId});}
-  catch(e){console.error(e);toast('Não foi possível acessar o microfone');sendSignal(d.from,{type:'call-reject',callId:d.callId});endCall(false)}
+async function handleAudioAnswer(d){
+  if(d?.callId!==A.call.id||!A.call.audioPc)return;
+  try{await A.call.audioPc.setRemoteDescription(d.answer);for(const c of A.call.audioRemoteIceQueue.splice(0))try{await A.call.audioPc.addIceCandidate(c)}catch{}}
+  catch(e){console.error(e);toast('Falha ao finalizar a chamada de áudio');endCall(true)}
 }
-function handleLiveAudio(d){if(d?.callId===A.call.id&&A.call.peer===d.from)playLiveAudio(d.pcm)}
-
+async function handleAudioIce(d){
+  if(d?.callId!==A.call.id||!d.candidate)return;
+  const pc=A.call.audioPc;
+  if(!pc||!pc.remoteDescription){A.call.audioRemoteIceQueue.push(d.candidate);return}
+  try{await pc.addIceCandidate(d.candidate)}catch(e){console.warn('ICE áudio',e)}
+}
 function videoIceServers(){return[{urls:['stun:stun.l.google.com:19302','stun:stun.cloudflare.com:3478']},{urls:'turn:openrelay.metered.ca:80',username:'openrelayproject',credential:'openrelayproject'},{urls:'turn:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'},{urls:'turns:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'}]}
 async function setupVideoMedia(){
   if(A.call.videoLocal)return A.call.videoLocal;

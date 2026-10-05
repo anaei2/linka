@@ -1,4 +1,4 @@
-const A={editingMessage:null,chatIds:[],token:localStorage.getItem('ac_token')||sessionStorage.getItem('ac_token')||'',user:null,contacts:[],active:null,search:'',messages:[],typingTimer:null,remoteTyping:false,notifications:[],statuses:[],calls:[],call:{pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[],roomCode:null,roomRole:null,roomJoined:false,remoteRoomJoined:false,roomName:null,roomPhoto:null,mode:'audio',muted:false,videoPc:null,videoLocal:null,videoRemote:null,videoOffer:null,videoIceQueue:[],videoRemoteIceQueue:[],audioContext:null,source:null,processor:null,silentGain:null,playTime:0,accepted:false,liveStarted:false,connectedAt:null,callTimer:null,ringContext:null,ringGain:null,ringTimer:null}};
+const A={editingMessage:null,chatIds:[],token:localStorage.getItem('ac_token')||sessionStorage.getItem('ac_token')||'',user:null,contacts:[],active:null,search:'',messages:[],typingTimer:null,remoteTyping:false,notifications:[],statuses:[],calls:[],call:{pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[],roomCode:null,roomRole:null,roomJoined:false,remoteRoomJoined:false,roomName:null,roomPhoto:null,mode:'audio',muted:false,videoPc:null,videoLocal:null,videoRemote:null,videoOffer:null,videoIceQueue:[],videoRemoteIceQueue:[],audioPc:null,audioLocal:null,audioRemote:null,audioRemoteIceQueue:[],audioOffer:null,audioContext:null,source:null,processor:null,silentGain:null,playTime:0,accepted:false,liveStarted:false,connectedAt:null,callTimer:null,ringContext:null,ringGain:null,ringTimer:null}};
 // Impede o menu nativo de seleção/cópia do navegador dentro do aplicativo.
 document.addEventListener('contextmenu',e=>e.preventDefault(),{capture:true});
 let longPressTimer=null,longPressTriggered=false;
@@ -534,21 +534,68 @@ function playLiveAudio(b64){
   const src=ctx.createBufferSource();src.buffer=buffer;src.connect(ctx.destination);
   const now=ctx.currentTime;A.call.playTime=Math.max(A.call.playTime||now+0.05,now+0.03);src.start(A.call.playTime);A.call.playTime+=buffer.duration;
 }
+async function setupAudioMedia(){
+  if(A.call.audioLocal)return A.call.audioLocal;
+  if(!navigator.mediaDevices?.getUserMedia)throw new Error('Microfone não disponível neste dispositivo');
+  const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
+  A.call.audioLocal=stream;
+  return stream;
+}
+function setupAudioPeer(){
+  if(A.call.audioPc)return A.call.audioPc;
+  const pc=new RTCPeerConnection({iceServers:videoIceServers(),bundlePolicy:'max-bundle'});
+  A.call.audioPc=pc;
+  pc.onicecandidate=e=>{if(e.candidate&&A.call.peer&&A.call.id)sendSignal(A.call.peer,{type:'call-audio-ice',callId:A.call.id,candidate:e.candidate})};
+  pc.ontrack=e=>{if(!e.streams[0])return;A.call.audioRemote=e.streams[0];let el=$('#callRemoteAudio');if(el){el.srcObject=e.streams[0];el.autoplay=true;el.playsInline=true;el.play().catch(()=>{})}};
+  pc.onconnectionstatechange=()=>{if(pc.connectionState==='connected')markCallConnected();else if(pc.connectionState==='failed'){toast('Falha na conexão de áudio');endCall(true)}else if(pc.connectionState==='disconnected'){$('#callStatus').textContent='Reconectando áudio…';setTimeout(()=>{if(A.call.audioPc===pc&&pc.connectionState==='disconnected')pc.restartIce?.()},1200)}};
+  return pc;
+}
+async function startOutgoingAudioOffer(){
+  const stream=await setupAudioMedia();const pc=setupAudioPeer();
+  stream.getTracks().forEach(t=>{if(!pc.getSenders().some(s=>s.track===t))pc.addTrack(t,stream)});
+  const offer=await pc.createOffer({offerToReceiveAudio:true});await pc.setLocalDescription(offer);
+  const ok=await sendSignalReliable(A.call.peer,{type:'call-audio-offer',callId:A.call.id,offer:pc.localDescription});
+  if(!ok)throw new Error('sinalização indisponível');
+}
 async function acceptIncomingCall(){
   stopOutgoingRing();
   if(!A.call.id||!A.call.peer)return;
   if(A.call.mode==='video'){return acceptIncomingVideoCall()}
   try{
     $('#callAccept').disabled=true;$('#callDecline').disabled=true;$('#callStatus').textContent='Conectando áudio…';
-    await startLiveAudio();
-    A.call.accepted=true;
-    const ok=await sendSignalReliable(A.call.peer,{type:'call-live-ready',callId:A.call.id});
+    await setupAudioMedia();setupAudioPeer();A.call.accepted=true;
+    const ok=await sendSignalReliable(A.call.peer,{type:'call-audio-ready',callId:A.call.id});
     if(!ok)throw new Error('sinalização indisponível');
   }catch(e){
     console.error(e);toast('Não foi possível acessar o microfone');
     if(A.call.peer)sendSignal(A.call.peer,{type:'call-reject',callId:A.call.id});
     endCall(false);
   }
+}
+async function handleAudioReady(d){
+  if(d?.callId!==A.call.id||A.call.mode!=='audio')return;
+  try{await startOutgoingAudioOffer()}catch(e){console.error(e);toast('Não foi possível iniciar a chamada de voz');endCall(true)}
+}
+async function handleAudioOffer(d){
+  if(d?.callId!==A.call.id||A.call.mode!=='audio'||!A.call.accepted)return;
+  try{
+    await setupAudioMedia();const pc=setupAudioPeer();
+    A.call.audioLocal.getTracks().forEach(t=>{if(!pc.getSenders().some(s=>s.track===t))pc.addTrack(t,A.call.audioLocal)});
+    await pc.setRemoteDescription(d.offer);
+    for(const c of A.call.audioRemoteIceQueue.splice(0))try{await pc.addIceCandidate(c)}catch{}
+    const answer=await pc.createAnswer();await pc.setLocalDescription(answer);
+    const ok=await sendSignalReliable(d.from,{type:'call-audio-answer',callId:d.callId,answer:pc.localDescription});
+    if(!ok)throw new Error('sinalização indisponível');
+  }catch(e){console.error(e);toast('Falha ao conectar a chamada de voz');endCall(true)}
+}
+async function handleAudioAnswer(d){
+  if(d?.callId!==A.call.id||!A.call.audioPc)return;
+  try{await A.call.audioPc.setRemoteDescription(d.answer);for(const c of A.call.audioRemoteIceQueue.splice(0))try{await A.call.audioPc.addIceCandidate(c)}catch{}}catch(e){console.error(e);toast('Falha ao finalizar a chamada de voz');endCall(true)}
+}
+async function handleAudioIce(d){
+  if(d?.callId!==A.call.id||!d.candidate)return;const pc=A.call.audioPc;
+  if(!pc||!pc.remoteDescription){A.call.audioRemoteIceQueue.push(d.candidate);return}
+  try{await pc.addIceCandidate(d.candidate)}catch(e){console.warn('ICE áudio',e)}
 }
 async function handleLiveReady(d){
   if(d?.callId!==A.call.id)return;
@@ -617,9 +664,9 @@ async function handleVideoIce(d){if(d?.callId!==A.call.id||!d.candidate)return;c
 function startOutgoingCall(contact){
   if(A.call.id){toast('Você já está em uma chamada');return}
   const callId=crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random();
-  A.call.peer=contact.id;A.call.id=callId;A.call.incoming=null;A.call.accepted=true;A.call.liveStarted=false;A.call.connectedAt=null;A.call.callTimer=null;A.call.roomName=contact.name;A.call.roomPhoto=contact.photo||'';
+  A.call.peer=contact.id;A.call.id=callId;A.call.incoming=null;A.call.accepted=true;A.call.liveStarted=false;A.call.mode='audio';A.call.connectedAt=null;A.call.callTimer=null;A.call.roomName=contact.name;A.call.roomPhoto=contact.photo||'';
   showCallOverlay(contact.name,contact.photo,'Chamando…',false);startOutgoingRing();
-  if(!sendSignal(contact.id,{type:'call-room-invite',callId})){endCall(false);toast('Não foi possível iniciar a chamada')}
+  sendSignalReliable(contact.id,{type:'call-room-invite',callId,mode:'audio'}).then(ok=>{if(!ok){endCall(false);toast('Não foi possível iniciar a chamada de voz')}});
 }
 function handleCallRoomInvite(d){
   if(A.call.id){if(d?.from)sendSignal(d.from,{type:'call-busy',callId:d.callId});return}
@@ -633,13 +680,13 @@ function endCall(notifyPeer=false){
   const wasConnected=!!A.call.connectedAt;
   if(notifyPeer&&peer&&id)sendSignal(peer,{type:'call-end',callId:id,mode:A.call.mode});
   if(wasConnected)playSound('callEnd');
-  stopLiveAudio();try{A.call.videoLocal?.getTracks?.().forEach(t=>t.stop())}catch{}try{A.call.videoPc?.close()}catch{}const rv=$('#callRemoteVideo'),lv=$('#callLocalVideo');if(rv)rv.srcObject=null;if(lv)lv.srcObject=null;const vst=$('#videoStage');if(vst)vst.hidden=true;const cb=$('#callCard');if(cb)cb.classList.remove('videoCallCard');if(A.call.callTimer)clearInterval(A.call.callTimer);A.call={pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[],roomCode:null,roomRole:null,roomJoined:false,remoteRoomJoined:false,roomName:null,roomPhoto:null,mode:'audio',muted:false,videoPc:null,videoLocal:null,videoRemote:null,videoOffer:null,videoIceQueue:[],videoRemoteIceQueue:[],audioContext:null,source:null,processor:null,silentGain:null,playTime:0,accepted:false,liveStarted:false,connectedAt:null,callTimer:null,ringContext:null,ringGain:null,ringTimer:null};hideCallOverlay();
+  stopLiveAudio();try{A.call.videoLocal?.getTracks?.().forEach(t=>t.stop())}catch{}try{A.call.videoPc?.close()}catch{}try{A.call.audioPc?.close()}catch{}try{A.call.audioLocal?.getTracks?.().forEach(t=>t.stop())}catch{}const rv=$('#callRemoteVideo'),lv=$('#callLocalVideo');if(rv)rv.srcObject=null;if(lv)lv.srcObject=null;const vst=$('#videoStage');if(vst)vst.hidden=true;const cb=$('#callCard');if(cb)cb.classList.remove('videoCallCard');if(A.call.callTimer)clearInterval(A.call.callTimer);A.call={pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[],roomCode:null,roomRole:null,roomJoined:false,remoteRoomJoined:false,roomName:null,roomPhoto:null,mode:'audio',muted:false,videoPc:null,videoLocal:null,videoRemote:null,videoOffer:null,videoIceQueue:[],videoRemoteIceQueue:[],audioPc:null,audioLocal:null,audioRemote:null,audioRemoteIceQueue:[],audioOffer:null,audioContext:null,source:null,processor:null,silentGain:null,playTime:0,accepted:false,liveStarted:false,connectedAt:null,callTimer:null,ringContext:null,ringGain:null,ringTimer:null};hideCallOverlay();
 }
 function sendTyping(active){if(!A.active||window.__linkaWs?.readyState!==1)return;try{window.__linkaWs.send(JSON.stringify({type:'typing',to:A.active.id,active:!!active}))}catch{}}
 function setTypingBubble(active){const box=$('#msgs');if(!box)return;let el=$('#remoteTypingBubble');if(active){if(!el){el=document.createElement('div');el.id='remoteTypingBubble';el.className='bubble typingBubble';el.innerHTML='<span class="typingDots"><i></i><i></i><i></i></span>';box.appendChild(el)}box.scrollTop=box.scrollHeight}else if(el)el.remove()}
 function showTyping(active,from){if(!A.active||String(A.active.id)!==String(from))return;const el=$('#chatPresence');if(!el)return;if(active){A.remoteTyping=true;el.textContent='digitando…';setTypingBubble(true)}else{A.remoteTyping=false;el.textContent=presenceText(A.active);setTypingBubble(false)}}
 async function loadPendingCalls(){try{const list=await api('/api/calls/pending');for(const d of list){if(!A.call.id)handleCallRoomInvite(d)}}catch{}}
-function connect(){const proto=location.protocol==='https:'?'wss':'ws';const ws=new WebSocket(proto+'://'+location.host+'/?token='+encodeURIComponent(A.token));window.__linkaPresenceIntentionalClose=false;ws.onopen=()=>{try{ws.send(JSON.stringify({type:document.visibilityState==='hidden'?'presence-offline':'presence-online'}))}catch{};loadPendingCalls()};ws.onmessage=async e=>{if(typeof e.data!=='string')return;let d;try{d=JSON.parse(e.data)}catch{return}if(d.type==='contact_added'){await loadContacts();renderList();toast('Novo contato adicionado')}if(d.type==='presence'){await loadContacts();refreshPresence()}if(d.type==='typing'){showTyping(!!d.active,d.from)}if(d.type==='call-room-invite'){const caller=A.contacts.find(x=>String(x.id)===String(d.from));inAppNotify('Chamada recebida',`${caller?.name||'Um contato'} está ligando para você`,()=>handleCallRoomInvite(d));handleCallRoomInvite(d)}if(d.type==='call-live-start'){handleLiveStart(d)}if(d.type==='call-live-ready'){handleLiveReady(d)}if(d.type==='call-live-audio'){handleLiveAudio(d)}if(d.type==='call-video-ready'){handleVideoReady(d)}if(d.type==='call-video-offer'){handleVideoOffer(d)}if(d.type==='call-video-answer'){handleVideoAnswer(d)}if(d.type==='call-video-ice'){handleVideoIce(d)}if(d.type==='call-offer'){handleIncomingOffer(d)}if(d.type==='call-answer'){handleCallAnswer(d)}if(d.type==='call-ice'){handleCallIce(d)}if(d.type==='call-reject'){toast('Chamada recusada');endCall(false)}if(d.type==='call-busy'){toast('Contato está em outra chamada');endCall(false)}if(d.type==='call-end'){toast('Chamada encerrada');if(d.callMessage&&A.active&&String(d.callMessage.from)===String(A.active.id)){A.messages.push(d.callMessage);drawMessages()}endCall(false);if($('#callsTab')?.classList.contains('active'))callsView()}if(d.type==='notification'){A.notifications.unshift(d.notification);A.notifications=A.notifications.slice(0,100);updateNotifBell();if(d.notification.kind==='message'){toast('Nova mensagem de '+d.notification.title);notifyIncoming({from:d.notification.from,type:'text',text:d.notification.body})}else toast(d.notification.title);return}if(d.type==='message_updated'){if(A.active&&String(d.message.from)===String(A.active.id)){const i=A.messages.findIndex(x=>x.id===d.message.id);if(i>=0)A.messages[i]=d.message;drawMessages()}return}if(d.type==='message_updated'){if(A.active&&String(d.message.from)===String(A.active.id)){const i=A.messages.findIndex(x=>x.id===d.message.id);if(i>=0)A.messages[i]=d.message;drawMessages()}return}if(d.type==='message_status'){if(A.active&&String(d.message.from)===String(A.user.id)){const i=A.messages.findIndex(x=>x.id===d.messageId);if(i>=0){A.messages[i].status=d.status;drawMessages()}}return}if(d.type==='message'){if(A.active&&String(d.message.from)===String(A.active.id)){showTyping(false,d.message.from);A.messages.push(d.message);if(!A.chatIds.includes(String(d.message.from)))A.chatIds.push(String(d.message.from));drawMessages();playSound('receive');api('/api/messages/'+d.message.from+'/read',{method:'POST'}).catch(()=>{});}else{const sender=A.contacts.find(x=>String(x.id)===String(d.message.from));inAppNotify(sender?.name||'Nova mensagem',d.message.type==='audio'?'Enviou um áudio':(d.message.text||'Nova mensagem'),()=>openChat(String(d.message.from)));toast('Nova mensagem');notifyIncoming(d.message)}}};ws.onclose=()=>{if(!window.__linkaPresenceIntentionalClose)setTimeout(()=>A.token&&connect(),3000)};window.__linkaWs=ws}
+function connect(){const proto=location.protocol==='https:'?'wss':'ws';const ws=new WebSocket(proto+'://'+location.host+'/?token='+encodeURIComponent(A.token));window.__linkaPresenceIntentionalClose=false;ws.onopen=()=>{try{ws.send(JSON.stringify({type:document.visibilityState==='hidden'?'presence-offline':'presence-online'}))}catch{};loadPendingCalls()};ws.onmessage=async e=>{if(typeof e.data!=='string')return;let d;try{d=JSON.parse(e.data)}catch{return}if(d.type==='contact_added'){await loadContacts();renderList();toast('Novo contato adicionado')}if(d.type==='presence'){await loadContacts();refreshPresence()}if(d.type==='typing'){showTyping(!!d.active,d.from)}if(d.type==='call-room-invite'){const caller=A.contacts.find(x=>String(x.id)===String(d.from));inAppNotify('Chamada recebida',`${caller?.name||'Um contato'} está ligando para você`,()=>{});handleCallRoomInvite(d)}if(d.type==='call-live-start'){handleLiveStart(d)}if(d.type==='call-live-ready'){handleLiveReady(d)}if(d.type==='call-live-audio'){handleLiveAudio(d)}if(d.type==='call-audio-ready'){handleAudioReady(d)}if(d.type==='call-audio-offer'){handleAudioOffer(d)}if(d.type==='call-audio-answer'){handleAudioAnswer(d)}if(d.type==='call-audio-ice'){handleAudioIce(d)}if(d.type==='call-video-ready'){handleVideoReady(d)}if(d.type==='call-video-offer'){handleVideoOffer(d)}if(d.type==='call-video-answer'){handleVideoAnswer(d)}if(d.type==='call-video-ice'){handleVideoIce(d)}if(d.type==='call-offer'){handleIncomingOffer(d)}if(d.type==='call-answer'){handleCallAnswer(d)}if(d.type==='call-ice'){handleCallIce(d)}if(d.type==='call-reject'){toast('Chamada recusada');endCall(false)}if(d.type==='call-busy'){toast('Contato está em outra chamada');endCall(false)}if(d.type==='call-end'){toast('Chamada encerrada');if(d.callMessage&&A.active&&String(d.callMessage.from)===String(A.active.id)){A.messages.push(d.callMessage);drawMessages()}endCall(false);if($('#callsTab')?.classList.contains('active'))callsView()}if(d.type==='notification'){A.notifications.unshift(d.notification);A.notifications=A.notifications.slice(0,100);updateNotifBell();if(d.notification.kind==='message'){toast('Nova mensagem de '+d.notification.title);notifyIncoming({from:d.notification.from,type:'text',text:d.notification.body})}else toast(d.notification.title);return}if(d.type==='message_updated'){if(A.active&&String(d.message.from)===String(A.active.id)){const i=A.messages.findIndex(x=>x.id===d.message.id);if(i>=0)A.messages[i]=d.message;drawMessages()}return}if(d.type==='message_updated'){if(A.active&&String(d.message.from)===String(A.active.id)){const i=A.messages.findIndex(x=>x.id===d.message.id);if(i>=0)A.messages[i]=d.message;drawMessages()}return}if(d.type==='message_status'){if(A.active&&String(d.message.from)===String(A.user.id)){const i=A.messages.findIndex(x=>x.id===d.messageId);if(i>=0){A.messages[i].status=d.status;drawMessages()}}return}if(d.type==='message'){if(A.active&&String(d.message.from)===String(A.active.id)){showTyping(false,d.message.from);A.messages.push(d.message);if(!A.chatIds.includes(String(d.message.from)))A.chatIds.push(String(d.message.from));drawMessages();playSound('receive');api('/api/messages/'+d.message.from+'/read',{method:'POST'}).catch(()=>{});}else{const sender=A.contacts.find(x=>String(x.id)===String(d.message.from));inAppNotify(sender?.name||'Nova mensagem',d.message.type==='audio'?'Enviou um áudio':(d.message.text||'Nova mensagem'),()=>openChat(String(d.message.from)));toast('Nova mensagem');notifyIncoming(d.message)}}};ws.onclose=()=>{if(!window.__linkaPresenceIntentionalClose)setTimeout(()=>A.token&&connect(),3000)};window.__linkaWs=ws}
 let presenceVisibilityTimer=null;
 document.addEventListener('visibilitychange',()=>{clearTimeout(presenceVisibilityTimer);if(!A.token)return;if(document.visibilityState==='hidden'){presenceVisibilityTimer=setTimeout(()=>{const ws=window.__linkaWs;if(ws?.readyState===1)try{ws.send(JSON.stringify({type:'presence-offline'}))}catch{}} ,500)}else{const ws=window.__linkaWs;if(ws?.readyState===1)try{ws.send(JSON.stringify({type:'presence-online'}))}catch{}}});
 window.addEventListener('pagehide',()=>{const ws=window.__linkaWs;if(ws?.readyState===1)try{ws.send(JSON.stringify({type:'presence-offline'}))}catch{}});

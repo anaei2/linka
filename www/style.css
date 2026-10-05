@@ -109,3 +109,11 @@
 .statusViewerRow span{display:flex;flex-direction:column;min-width:0}.statusViewerRow small{color:#8fa0a8;margin-top:2px}
 @media(max-width:700px){.statusViewCount{right:62px;bottom:13px}}
 .bubble{position:relative}.msgMore{position:absolute;right:5px;top:4px;border:0;background:transparent;color:inherit;opacity:0;pointer-events:none;font-size:18px;line-height:1;padding:2px 5px;cursor:pointer;transition:opacity .12s}.bubble.show-msg-menu .msgMore{opacity:.78;pointer-events:auto}.msgTicks{font-size:11px;margin-left:4px;font-weight:700;letter-spacing:-2px}.msgTicks.blue{color:#53bdeb}.bubble.mine .msgMore{color:inherit}.bubble.deleted{opacity:.7;font-style:italic}.bubble small{opacity:.65}.messageActions{display:flex;flex-direction:column;gap:8px}.messageActions button{padding:12px 14px;border:0;border-radius:12px;background:var(--card,#222);color:inherit;text-align:left}.messageActions .danger{text-align:center}
+/* Edição de mensagem no próprio chat, sem tela/modal gigante */
+.editBar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;margin:0 8px 6px;border-radius:12px;background:rgba(0,168,132,.14);border-left:3px solid #00a884;color:inherit}
+.editBar span{display:flex;flex-direction:column;min-width:0}
+.editBar b{font-size:13px;color:#00a884}
+.editBar small{font-size:11px;opacity:.65;margin-top:2px}
+.editBar button{width:34px;height:34px;border:0;border-radius:50%;background:transparent;color:inherit;font-size:25px;line-height:1;cursor:pointer}
+.editBar[hidden]{display:none}
+.composer.editing{border-top-color:#00a884}

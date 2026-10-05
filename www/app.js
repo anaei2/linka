@@ -1,4 +1,4 @@
-const A={editingMessage:null,chatIds:[],token:localStorage.getItem('ac_token')||sessionStorage.getItem('ac_token')||'',user:null,contacts:[],active:null,search:'',messages:[],typingTimer:null,remoteTyping:false,notifications:[],statuses:[],calls:[],call:{pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[],roomCode:null,roomRole:null,roomJoined:false,remoteRoomJoined:false,roomName:null,roomPhoto:null,mode:'audio',muted:false,videoPc:null,videoLocal:null,videoRemote:null,videoOffer:null,videoIceQueue:[],videoRemoteIceQueue:[],audioPc:null,audioLocal:null,audioRemote:null,audioRemoteIceQueue:[],audioOffer:null,audioContext:null,source:null,processor:null,silentGain:null,playTime:0,accepted:false,liveStarted:false,connectedAt:null,callTimer:null,ringContext:null,ringGain:null,ringTimer:null}};
+const A={editingMessage:null,chatIds:[],token:localStorage.getItem('ac_token')||sessionStorage.getItem('ac_token')||'',user:null,contacts:[],active:null,search:'',messages:[],typingTimer:null,remoteTyping:false,notifications:[],statuses:[],calls:[],call:{pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[],roomCode:null,roomRole:null,roomJoined:false,remoteRoomJoined:false,roomName:null,roomPhoto:null,mode:'audio',muted:false,videoPc:null,videoLocal:null,videoRemote:null,videoOffer:null,videoIceQueue:[],videoRemoteIceQueue:[],audioPc:null,audioLocal:null,audioRemote:null,audioRemoteIceQueue:[],audioOffer:null,audioContext:null,source:null,processor:null,silentGain:null,playTime:0,accepted:false,liveStarted:false,connectedAt:null,callTimer:null,callStartedAt:null,ringContext:null,ringGain:null,ringTimer:null}};
 // Impede o menu nativo de seleção/cópia do navegador dentro do aplicativo.
 document.addEventListener('contextmenu',e=>e.preventDefault(),{capture:true});
 let longPressTimer=null,longPressTriggered=false;
@@ -471,9 +471,12 @@ function startOutgoingRing(){
 }
 function startCallTimer(){
   if(A.call.callTimer)clearInterval(A.call.callTimer);
-  A.call.connectedAt=Date.now();
+  const now=Date.now();
+  A.call.connectedAt=A.call.connectedAt||now;
+  A.call.callStartedAt=A.call.connectedAt;
   const update=()=>{
-    const sec=Math.max(0,Math.floor((Date.now()-A.call.connectedAt)/1000));
+    const base=Number(A.call.callStartedAt||A.call.connectedAt||Date.now());
+    const sec=Math.max(0,Math.floor((Date.now()-base)/1000));
     const m=String(Math.floor(sec/60)).padStart(2,'0');
     const s=String(sec%60).padStart(2,'0');
     const text=m+':'+s;
@@ -483,9 +486,11 @@ function startCallTimer(){
     if(legacy)legacy.textContent=text;
   };
   update();
-  A.call.callTimer=setInterval(update,1000);
+  A.call.callTimer=setInterval(update,250);
 }
 function markCallConnected(){
+  if(A.call.connectedAt)return;
+  A.call.connectedAt=Date.now();
   $('#callAccept').hidden=true;$('#callDecline').hidden=true;$('#callEnd').hidden=false;
   $('#callStatus').textContent='Conectado';
   const duration=$('#callDuration');if(duration){duration.hidden=false;duration.textContent='00:00'}
@@ -515,21 +520,25 @@ function stopLiveAudio(){
 }
 async function startLiveAudio(){
   if(A.call.audioContext&&A.call.processor)return true;
-  const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,channelCount:1,sampleRate:48000},video:false});
+  const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,channelCount:1},video:false});
   const ctx=new (window.AudioContext||window.webkitAudioContext)();await ctx.resume();
   const source=ctx.createMediaStreamSource(stream);
-  const high=ctx.createBiquadFilter();high.type='highpass';high.frequency.value=90;high.Q.value=0.7;
-  const compressor=ctx.createDynamicsCompressor();compressor.threshold.value=-28;compressor.knee.value=18;compressor.ratio.value=3;compressor.attack.value=0.003;compressor.release.value=0.12;
+  const high=ctx.createBiquadFilter();high.type='highpass';high.frequency.value=120;high.Q.value=0.7;
+  const low=ctx.createBiquadFilter();low.type='lowpass';low.frequency.value=7000;low.Q.value=0.7;
+  const compressor=ctx.createDynamicsCompressor();compressor.threshold.value=-32;compressor.knee.value=20;compressor.ratio.value=3;compressor.attack.value=0.004;compressor.release.value=0.16;
   const processor=ctx.createScriptProcessor(4096,1,1);
   const silent=ctx.createGain();silent.gain.value=0;
-  A.call.stream=stream;A.call.audioContext=ctx;A.call.source=source;A.call.processor=processor;A.call.silentGain=silent;A.call.playTime=ctx.currentTime+0.08;
+  A.call.stream=stream;A.call.audioContext=ctx;A.call.source=source;A.call.processor=processor;A.call.silentGain=silent;A.call.playTime=ctx.currentTime+0.06;
   processor.onaudioprocess=e=>{
     if(!A.call.id||!A.call.peer||window.__linkaWs?.readyState!==1)return;
-    const input=e.inputBuffer.getChannelData(0);const pcm=downsampleTo16k(input,ctx.sampleRate);
-    if(!pcm.length)return;
+    const input=e.inputBuffer.getChannelData(0);
+    let sum=0;for(let i=0;i<input.length;i++){const v=input[i];sum+=v*v}
+    const rms=Math.sqrt(sum/Math.max(1,input.length));
+    if(rms<0.012)return;
+    const pcm=downsampleTo16k(input,ctx.sampleRate);if(!pcm.length)return;
     try{window.__linkaWs.send(JSON.stringify({to:A.call.peer,type:'call-live-audio',callId:A.call.id,pcm:pcm16Base64(pcm)}))}catch{}
   };
-  source.connect(high);high.connect(compressor);compressor.connect(processor);processor.connect(silent);silent.connect(ctx.destination);
+  source.connect(high);high.connect(low);low.connect(compressor);compressor.connect(processor);processor.connect(silent);silent.connect(ctx.destination);
   return true;
 }
 function playLiveAudio(b64){
@@ -537,8 +546,13 @@ function playLiveAudio(b64){
   const ctx=A.call.audioContext;if(ctx.state==='suspended')ctx.resume().catch(()=>{});
   const samples=base64ToFloat32(b64);if(!samples.length)return;
   const buffer=ctx.createBuffer(1,samples.length,16000);buffer.copyToChannel(samples,0);
-  const src=ctx.createBufferSource();src.buffer=buffer;const out=ctx.createGain();out.gain.value=0.88;src.connect(out);out.connect(ctx.destination);
-  const now=ctx.currentTime;A.call.playTime=Math.max(A.call.playTime||now+0.05,now+0.03);src.start(A.call.playTime);A.call.playTime+=buffer.duration;
+  const src=ctx.createBufferSource();src.buffer=buffer;
+  const out=ctx.createGain();out.gain.value=0.72;src.connect(out);out.connect(ctx.destination);
+  const now=ctx.currentTime;
+  // Keep the playback queue short so delayed packets don't make the voice sound repeated.
+  A.call.playTime=Math.max(now+0.025,Math.min(A.call.playTime||now+0.025,now+0.18));
+  src.start(A.call.playTime);
+  A.call.playTime+=Math.min(buffer.duration,0.28);
 }
 async function setupAudioMedia(){return startLiveAudio().then(()=>A.call.stream)}
 function setupAudioPeer(){return null}
@@ -653,7 +667,7 @@ function endCall(notifyPeer=false){
   const wasConnected=!!A.call.connectedAt;
   if(notifyPeer&&peer&&id)sendSignal(peer,{type:'call-end',callId:id,mode:A.call.mode});
   if(wasConnected)playSound('callEnd');
-  stopLiveAudio();try{A.call.videoLocal?.getTracks?.().forEach(t=>t.stop())}catch{}try{A.call.videoPc?.close()}catch{}try{A.call.audioPc?.close()}catch{}try{A.call.audioLocal?.getTracks?.().forEach(t=>t.stop())}catch{}const rv=$('#callRemoteVideo'),lv=$('#callLocalVideo');if(rv)rv.srcObject=null;if(lv)lv.srcObject=null;const vst=$('#videoStage');if(vst)vst.hidden=true;const cb=$('#callCard');if(cb)cb.classList.remove('videoCallCard');if(A.call.callTimer)clearInterval(A.call.callTimer);const duration=$('#callDuration');if(duration){duration.hidden=true;duration.textContent='00:00'}A.call={pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[],roomCode:null,roomRole:null,roomJoined:false,remoteRoomJoined:false,roomName:null,roomPhoto:null,mode:'audio',muted:false,videoPc:null,videoLocal:null,videoRemote:null,videoOffer:null,videoIceQueue:[],videoRemoteIceQueue:[],audioPc:null,audioLocal:null,audioRemote:null,audioRemoteIceQueue:[],audioOffer:null,audioContext:null,source:null,processor:null,silentGain:null,playTime:0,accepted:false,liveStarted:false,connectedAt:null,callTimer:null,ringContext:null,ringGain:null,ringTimer:null};hideCallOverlay();
+  stopLiveAudio();try{A.call.videoLocal?.getTracks?.().forEach(t=>t.stop())}catch{}try{A.call.videoPc?.close()}catch{}try{A.call.audioPc?.close()}catch{}try{A.call.audioLocal?.getTracks?.().forEach(t=>t.stop())}catch{}const rv=$('#callRemoteVideo'),lv=$('#callLocalVideo');if(rv)rv.srcObject=null;if(lv)lv.srcObject=null;const vst=$('#videoStage');if(vst)vst.hidden=true;const cb=$('#callCard');if(cb)cb.classList.remove('videoCallCard');if(A.call.callTimer)clearInterval(A.call.callTimer);const duration=$('#callDuration');if(duration){duration.hidden=true;duration.textContent='00:00'}A.call={pc:null,stream:null,remote:null,peer:null,id:null,incoming:null,pendingCandidates:[],earlyCandidates:[],roomCode:null,roomRole:null,roomJoined:false,remoteRoomJoined:false,roomName:null,roomPhoto:null,mode:'audio',muted:false,videoPc:null,videoLocal:null,videoRemote:null,videoOffer:null,videoIceQueue:[],videoRemoteIceQueue:[],audioPc:null,audioLocal:null,audioRemote:null,audioRemoteIceQueue:[],audioOffer:null,audioContext:null,source:null,processor:null,silentGain:null,playTime:0,accepted:false,liveStarted:false,connectedAt:null,callTimer:null,callStartedAt:null,ringContext:null,ringGain:null,ringTimer:null};hideCallOverlay();
 }
 function sendTyping(active){if(!A.active||window.__linkaWs?.readyState!==1)return;try{window.__linkaWs.send(JSON.stringify({type:'typing',to:A.active.id,active:!!active}))}catch{}}
 function setTypingBubble(active){const box=$('#msgs');if(!box)return;let el=$('#remoteTypingBubble');if(active){if(!el){el=document.createElement('div');el.id='remoteTypingBubble';el.className='bubble typingBubble';el.innerHTML='<span class="typingDots"><i></i><i></i><i></i></span>';box.appendChild(el)}box.scrollTop=box.scrollHeight}else if(el)el.remove()}

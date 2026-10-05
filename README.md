@@ -1,11 +1,10 @@
-# Linka v32 — correção de chamadas
+# Linka v34 — correção de chamadas
 
-Correções principais:
-- sinalização de chamadas com tentativa automática quando o WebSocket demora a ficar disponível;
-- atendimento de chamadas de áudio mais robusto;
-- chamada de vídeo com captura de câmera/microfone mais compatível com celulares;
-- resolução de vídeo inicial reduzida para diminuir falhas e uso de dados/CPU;
-- fallback automático de câmera/microfone para constraints simples;
-- oferta/resposta WebRTC com envio confiável;
-- tratamento melhor de ICE e reconexão de vídeo;
-- encerramento correto de câmera, microfone e conexão WebRTC.
+Esta versão corrige principalmente:
+- botão Atender que podia permanecer desabilitado após uma chamada anterior;
+- atendimento de vídeo com fluxo de conexão mais seguro;
+- atendimento de voz com proteção contra duplo toque;
+- limpeza da tela ao encerrar a chamada;
+- encerramento idempotente no servidor para evitar chamadas presas/duplicadas.
+
+Deploy no Render: `npm install` e `npm start`.

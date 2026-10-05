@@ -1,10 +1,11 @@
-# Linka v35 — chamadas estabilizadas
+# Linka v37 — chamadas: contador e áudio aprimorados
 
-- Chamadas de áudio voltaram ao transporte de áudio por WebSocket/PCM do projeto, evitando dependência de ICE/TURN para voz.
-- Chamadas de vídeo continuam em WebRTC.
-- Vídeo agora informa falha de ICE/rede em vez de ficar indefinidamente em “Conectando”.
-- Adicionado timeout visual para vídeo sem conexão.
-- Limpeza de chamada e permissões continuam sendo encerradas ao desligar.
+Baseada na v36.
+
+- Contador de duração de áudio e vídeo inicia uma única vez ao conectar e atualiza de forma mais confiável.
+- Processamento de entrada com filtro passa-altas/baixas, compressor, cancelamento de eco, redução de ruído e gate para silêncio.
+- Reprodução PCM com fila curta para evitar acúmulo de áudio atrasado, que pode soar como repetição.
+- Limpeza do contador ao encerrar a chamada.
 
 ## Deploy
-Use os mesmos arquivos do projeto no Render: `npm install` e `npm start`.
+No Render: substitua os arquivos pelo conteúdo desta versão e faça um novo deploy.

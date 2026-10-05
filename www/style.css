@@ -13,6 +13,10 @@
 
 
 
+
+/* Controles de chamada: microfone próprio em SVG, sem emoji */
+.callControls{display:flex;align-items:center;justify-content:center;gap:14px;margin-top:14px;min-height:58px}.callMute{width:56px;height:56px;border:0;border-radius:50%;background:#26343a;color:#fff;display:grid;place-items:center;cursor:pointer;box-shadow:0 5px 18px #0005}.callMute svg{width:25px;height:25px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}.callMute.muted{background:#8b2630}.callMute:active{transform:scale(.95)}.callControls .callEnd{margin:0}.callMute:focus-visible{outline:2px solid #53bdeb;outline-offset:3px}
+
 .callTimer{font-variant-numeric:tabular-nums;font-weight:700;margin-left:6px;letter-spacing:.4px}
 
 .videoBtn{margin-left:2px}.videoStage{position:relative;width:min(92vw,420px);height:min(65vh,520px);margin:0 auto 12px;border-radius:22px;overflow:hidden;background:#061216}.callRemoteVideo{width:100%;height:100%;object-fit:cover;background:#061216}.callLocalVideo{position:absolute;right:12px;top:12px;width:105px;height:145px;object-fit:cover;border-radius:14px;border:2px solid #ffffff66;background:#09161a}.videoCallCard:has(.videoStage:not([hidden])){max-width:460px}.videoCallCard:has(.videoStage:not([hidden])) .callAvatar{display:none}.callOverlay video{max-width:100%}@media(max-width:520px){.videoStage{width:92vw;height:58vh}.callLocalVideo{width:88px;height:122px}}

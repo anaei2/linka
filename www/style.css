@@ -98,10 +98,14 @@
 .statusScreen.holding .statusFullMedia{
   filter:none;
 }
-
-/* Indicador de status não visto e painel de visualizações */
-.avatarStatusWrap{position:relative;display:inline-flex;flex:none}
-.avatarStatusWrap .avatar{position:relative}
-.statusDot{position:absolute;right:-1px;bottom:-1px;width:10px;height:10px;border-radius:50%;background:#22c55e;border:2px solid #111b21;z-index:3;box-sizing:border-box}
-.status-viewed .avatar{border-color:rgba(255,255,255,.62)!important}
-.statusViewers{padding:2px 0}.statusViewerCount{font-size:14px;color:#9aabb3;margin:-4px 0 14px}.viewerRow{display:flex;align-items:center;gap:11px;padding:10px 0;border-bottom:1px solid #1e292f}.viewerRow .avatar{width:42px;height:42px}.viewerRow>div:last-child{min-width:0}.viewerRow b,.viewerRow small{display:block}.viewerRow small{color:#8b9aa1;margin-top:2px}
+/* Status: visto / visualizações */
+.statusItem.statusSeen .avatar{border-color:rgba(255,255,255,.55)}
+.statusItem:not(.statusSeen) .avatar{border-color:#00a884}
+.statusHeart em{display:none!important}
+.statusViewCount{position:absolute;right:66px;bottom:18px;height:38px;min-width:58px;padding:0 12px;border:1px solid rgba(255,255,255,.14);border-radius:20px;background:rgba(10,20,25,.78);color:#fff;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);font-weight:700;cursor:pointer}
+.statusViewsSheet{max-height:70vh;overflow:auto}
+.statusViewsList{display:flex;flex-direction:column;gap:8px;margin:12px 0 16px}
+.statusViewerRow{display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid #25333a}
+.statusViewerRow span{display:flex;flex-direction:column;min-width:0}.statusViewerRow small{color:#8fa0a8;margin-top:2px}
+@media(max-width:700px){.statusViewCount{right:62px;bottom:13px}}
+.bubble{position:relative}.msgMore{position:absolute;right:5px;top:4px;border:0;background:transparent;color:inherit;opacity:0;pointer-events:none;font-size:18px;line-height:1;padding:2px 5px;cursor:pointer;transition:opacity .12s}.bubble.show-msg-menu .msgMore{opacity:.78;pointer-events:auto}.msgTicks{font-size:11px;margin-left:4px;font-weight:700;letter-spacing:-2px}.msgTicks.blue{color:#53bdeb}.bubble.mine .msgMore{color:inherit}.bubble.deleted{opacity:.7;font-style:italic}.bubble small{opacity:.65}.messageActions{display:flex;flex-direction:column;gap:8px}.messageActions button{padding:12px 14px;border:0;border-radius:12px;background:var(--card,#222);color:inherit;text-align:left}.messageActions .danger{text-align:center}

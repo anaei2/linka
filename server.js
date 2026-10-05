@@ -214,7 +214,7 @@ app.post('/api/statuses',auth,(req,res)=>{
 function findStatus(owner,statusId){
   const raw=db.statuses[owner]; const arr=Array.isArray(raw)?raw:(raw?[raw]:[]); return arr.find(st=>String(st.id||st.createdAt)===String(statusId))||null;
 }
-app.get('/api/status-media/:owner/:statusId',auth,(req,res)=>{
+app.get('/api/status-media/:owner/:statusId',(req,res,next)=>{const qt=String(req.query?.token||'');if(qt)req.headers.authorization='Bearer '+qt;auth(req,res,next)},(req,res)=>{
   const owner=String(req.params.owner),sid=String(req.params.statusId);
   const ids=db.contacts[req.user.id]||[]; if(owner!==String(req.user.id)&&!ids.map(String).includes(owner))return res.status(403).end();
   const st=findStatus(owner,sid); if(!st||Date.now()-Number(st.createdAt||0)>86400000||(!st.media&&!st.mediaFile))return res.status(404).end();

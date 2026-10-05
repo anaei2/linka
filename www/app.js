@@ -187,20 +187,52 @@ function playSound(kind='send'){
 }
 function setupRecorder(contact){
   const b=$('#voice'); if(!b)return;
-  let downX=0, moved=false, activeHold=false;
+  let downX=0, moved=false, activeHold=false, holdTimer=null, pointerId=null, recordingStarted=false;
+  const clearHold=()=>{if(holdTimer){clearTimeout(holdTimer);holdTimer=null;}};
   const begin=e=>{
     if(e.pointerType==='mouse' && e.button!==0)return;
-    e.preventDefault(); downX=e.clientX; moved=false; activeHold=true;
+    e.preventDefault();
+    clearHold();
+    downX=e.clientX; moved=false; activeHold=true; recordingStarted=false; pointerId=e.pointerId;
     b.setPointerCapture?.(e.pointerId);
-    playSound('record'); startRecording(contact);
+    const input=$('#msg'); if(input)input.placeholder='Segure para gravar…';
+    // Um toque rápido não inicia a gravação. É necessário manter pressionado.
+    holdTimer=setTimeout(()=>{
+      holdTimer=null;
+      if(!activeHold || moved)return;
+      recordingStarted=true;
+      playSound('record');
+      startRecording(contact);
+    },280);
   };
   const move=e=>{
     if(!activeHold)return;
-    if(Math.abs(e.clientX-downX)>70){moved=true;b.classList.add('canceling');b.textContent='↶';const input=$('#msg');if(input)input.placeholder='Solte para cancelar';}
-    else {moved=false;b.classList.remove('canceling');const input=$('#msg');if(input)input.placeholder='Solte para enviar';}
+    const dx=e.clientX-downX;
+    if(dx < -70){
+      moved=true;
+      clearHold();
+      b.classList.add('canceling');
+      b.textContent='↶';
+      const input=$('#msg');if(input)input.placeholder='Solte para cancelar';
+      if(recordingStarted)cancelRecording();
+    }else if(dx < 0){
+      b.classList.remove('canceling');
+      const input=$('#msg');if(input)input.placeholder='Deslize para cancelar';
+    }else if(recordingStarted){
+      b.classList.remove('canceling');
+      const input=$('#msg');if(input)input.placeholder='Solte para enviar';
+    }
   };
   const end=e=>{
-    if(!activeHold)return; activeHold=false; b.releasePointerCapture?.(e.pointerId);
+    if(!activeHold)return;
+    activeHold=false;
+    clearHold();
+    try{if(pointerId!=null)b.releasePointerCapture?.(pointerId)}catch{}
+    pointerId=null;
+    if(!recordingStarted){
+      moved=false;b.classList.remove('canceling');resetVoice();
+      return;
+    }
     if(moved){cancelRecording();playSound('cancel');}
     else {stopRecording(true);playSound('send');}
     moved=false;b.classList.remove('canceling');
@@ -208,35 +240,66 @@ function setupRecorder(contact){
   b.addEventListener('pointerdown',begin);
   b.addEventListener('pointermove',move);
   b.addEventListener('pointerup',end);
-  b.addEventListener('pointercancel',()=>{if(activeHold){activeHold=false;cancelRecording();playSound('cancel');}b.classList.remove('canceling')});
+  b.addEventListener('pointercancel',()=>{
+    if(!activeHold)return;
+    activeHold=false;clearHold();pointerId=null;
+    if(recordingStarted){cancelRecording();playSound('cancel');}
+    recordingStarted=false;b.classList.remove('canceling');resetVoice();
+  });
   b.addEventListener('click',e=>e.preventDefault());
 }
 function cancelRecording(){
   if(!recorder){resetVoice();return;}
-  try{recorder.__cancelled=true;if(recorder.state==='recording')recorder.stop();else resetVoice();}catch{resetVoice()}
+  try{recorder.__cancelled=true;if(recorder.state==='recording'||recorder.state==='paused')recorder.stop();else resetVoice()}catch{resetVoice()}
 }
 async function startRecording(contact){
+  if(recorder)return;
   if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast('Seu navegador não suporta gravação de áudio');return}
   try{
-    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
     const types=['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4'];
     const mime=types.find(x=>MediaRecorder.isTypeSupported(x))||'';
-    recorder=new MediaRecorder(stream,mime?{mimeType:mime}:undefined);recordChunks=[];recordSeconds=0;recordContact=contact;recorder.__cancelled=false;
-    recorder.ondataavailable=e=>{if(e.data.size)recordChunks.push(e.data)};
-    recorder.onstop=async()=>{
-      const canceled=!!recorder?.__cancelled; stream.getTracks().forEach(t=>t.stop());clearInterval(recordTimer);recordTimer=null;
-      const current=recorder; recorder=null;
+    const r=new MediaRecorder(stream,mime?{mimeType:mime}:undefined);
+    recorder=r;recordChunks=[];recordSeconds=0;recordContact=contact;r.__cancelled=false;
+    const startedAt=Date.now();
+    r.ondataavailable=e=>{if(e.data&&e.data.size)recordChunks.push(e.data)};
+    r.onerror=()=>{try{stream.getTracks().forEach(t=>t.stop())}catch{};recordChunks=[];recorder=null;resetVoice();toast('Não foi possível gravar o áudio.')};
+    r.onstop=async()=>{
+      const canceled=!!r.__cancelled;
+      try{stream.getTracks().forEach(t=>t.stop())}catch{}
+      clearInterval(recordTimer);recordTimer=null;
+      if(recorder===r)recorder=null;
+      const elapsed=Math.max(1,Math.round((Date.now()-startedAt)/1000));
+      const duration=Math.max(1,Math.min(90,Math.max(recordSeconds,elapsed)));
       if(canceled){recordChunks=[];resetVoice();return}
-      const blob=new Blob(recordChunks,{type:current?.mimeType||'audio/webm'});recordChunks=[];
+      const blob=new Blob(recordChunks,{type:r.mimeType||mime||'audio/webm'});recordChunks=[];
+      if(!blob.size){toast('Áudio vazio. Segure o microfone por mais tempo.');resetVoice();return}
       if(blob.size>8*1024*1024){toast('Áudio muito grande. Grave por menos tempo.');resetVoice();return}
-      const reader=new FileReader();reader.onload=async()=>{try{const m=await api('/api/messages/'+contact.id,{method:'POST',body:{type:'audio',audio:reader.result,duration:Math.max(1,recordSeconds)}});if(A.active&&String(A.active.id)===String(contact.id)){A.messages.push(m);if(!A.chatIds.includes(String(contact.id)))A.chatIds.push(String(contact.id));drawMessages()}toast('Áudio enviado')}catch(e){toast(e.message)}resetVoice()};reader.readAsDataURL(blob)
+      const reader=new FileReader();
+      reader.onload=async()=>{
+        try{
+          const data=String(reader.result||'');
+          if(!/^data:audio\//i.test(data)){toast('Áudio inválido. Tente gravar novamente.');return}
+          const m=await api('/api/messages/'+contact.id,{method:'POST',body:{type:'audio',audio:data,duration}});
+          if(A.active&&String(A.active.id)===String(contact.id)){A.messages.push(m);if(!A.chatIds.includes(String(contact.id)))A.chatIds.push(String(contact.id));drawMessages()}
+        }catch(e){toast(e.message||'Não foi possível enviar o áudio.')}
+        finally{resetVoice()}
+      };
+      reader.onerror=()=>{toast('Não foi possível preparar o áudio.');resetVoice()};
+      reader.readAsDataURL(blob);
     };
-    recorder.start(250);recordTimer=setInterval(()=>{recordSeconds++;const b=$('#voice');if(b)b.textContent=formatRecordTime(recordSeconds);if(recordSeconds>=90){stopRecording(true)}},1000);
-    const btn=$('#voice');if(btn){btn.classList.add('recording');btn.textContent='0:00'}const input=$('#msg');if(input)input.placeholder='Solte para enviar';
-  }catch(e){toast('Não foi possível acessar o microfone');resetVoice()}
+    r.start(250);
+    recordTimer=setInterval(()=>{
+      recordSeconds=Math.max(1,Math.round((Date.now()-startedAt)/1000));
+      const btn=$('#voice');if(btn)btn.textContent=formatRecordTime(recordSeconds);
+      if(recordSeconds>=90)stopRecording(true);
+    },250);
+    const btn=$('#voice');if(btn){btn.classList.add('recording');btn.textContent='0:00'}
+    const input=$('#msg');if(input)input.placeholder='Solte para enviar';
+  }catch(e){recorder=null;toast('Não foi possível acessar o microfone');resetVoice()}
 }
-function stopRecording(send=true){if(!recorder)return;if(recorder.state==='recording'){recorder.__cancelled=!send;recorder.stop()}else resetVoice()}
-function resetVoice(){const b=$('#voice');if(b){b.classList.remove('recording','canceling');b.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"></path></svg>';b.setAttribute('aria-label','Segure para gravar áudio')}recorder=null;clearInterval(recordTimer);recordTimer=null;recordSeconds=0;recordStartAt=0;const input=$('#msg');if(input)input.placeholder='Digite uma mensagem…'}
+function stopRecording(send=true){if(!recorder)return;try{if(recorder.state==='recording'||recorder.state==='paused'){recorder.__cancelled=!send;recorder.stop()}else resetVoice()}catch{resetVoice()}}
+function resetVoice(){const b=$('#voice');if(b){b.classList.remove('recording','canceling');b.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"></path></svg>';b.setAttribute('aria-label','Segure para gravar áudio')}clearTimeout(window.__linkaHoldTimer);recorder=null;clearInterval(recordTimer);recordTimer=null;recordSeconds=0;recordStartAt=0;const input=$('#msg');if(input)input.placeholder='Digite uma mensagem…'}
 
 function formatRecordTime(s){const m=Math.floor(s/60),sec=String(s%60).padStart(2,'0');return `${m}:${sec}`}
 function bubble(m){

@@ -57,7 +57,7 @@ firebase.initializeApp(${JSON.stringify(c)});
 const messaging=firebase.messaging();
 messaging.onBackgroundMessage((payload)=>{
   const n=payload.notification||{}; const d=payload.data||{};
-  const title=d.title||n.title||'Linka'; const body=d.body||n.body||'Nova notificação';
+  const title=n.title||'Linka'; const body=n.body||'Nova mensagem';
   self.registration.showNotification(title,{body,icon:n.icon||'/icon-192.png',badge:n.badge||'/icon-192.png',tag:d.chatId?'linka-'+d.chatId:'linka',data:d});
 });
 self.addEventListener('notificationclick',(event)=>{event.notification.close();const d=event.notification.data||{};const url=d.chatId?'/?chat='+encodeURIComponent(d.chatId):'/';event.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(cs=>{for(const c of cs){if('focus' in c){c.navigate(url);return c.focus()}}return clients.openWindow(url)}));});`);
@@ -157,31 +157,28 @@ function pair(a,b){return [a,b].sort().join(':')}
 function sendUser(uid,msg){let count=0;for(const [token,idv] of sessions){if(idv!==uid)continue;for(const c of wss.clients)if(c.readyState===1&&c.token===token){try{c.send(JSON.stringify(msg));count++}catch{}}}return count}
 function addNotification(uid,n){db.notifications[uid]??=[];const item={id:id(),createdAt:Date.now(),read:false,...n};db.notifications[uid].unshift(item);db.notifications[uid]=db.notifications[uid].slice(0,100);save();sendUser(uid,{type:'notification',notification:item});return item}
 async function pushUser(uid,payload){
-  if(!firebaseReady)return {sent:0,skipped:true,error:'Firebase Admin não inicializado'};
-  const tokens=[...(db.fcmTokens[uid]||[])].filter(Boolean);
-  if(!tokens.length)return {sent:0,skipped:true,error:'Usuário sem token FCM'};
-  const data={...Object.fromEntries(Object.entries(payload.data||{}).map(([k,v])=>[String(k),String(v)])),title:String(payload.title||'Linka'),body:String(payload.body||'')};
-  const link=payload.data?.chatId?`/?chat=${encodeURIComponent(payload.data.chatId)}`:'/';
+  if(!firebaseReady)return {sent:0,skipped:true};
+  const tokens=[...(db.fcmTokens[uid]||[])];
+  if(!tokens.length)return {sent:0};
   const message={
     tokens,
-    data,
+    notification:{title:String(payload.title||'Linka'),body:String(payload.body||'')},
+    data:Object.fromEntries(Object.entries(payload.data||{}).map(([k,v])=>[String(k),String(v)])),
     webpush:{
       headers:{Urgency:payload.data?.type==='call'?'high':'normal'},
       notification:{icon:payload.icon||'/icon-192.png',badge:payload.badge||'/icon-192.png',tag:payload.tag||'linka',renotify:true,requireInteraction:payload.data?.type==='call'},
-      fcmOptions:{link}
+      fcmOptions:{link:payload.data?.chatId?`/?chat=${encodeURIComponent(payload.data.chatId)}`:'/'}
     }
   };
   try{
     const response=await admin.messaging().sendEachForMulticast(message);
     const invalid=[];
     response.responses.forEach((r,i)=>{
-      const code=r.error?.code||'';
-      if(!r.success && ['messaging/registration-token-not-registered','messaging/invalid-registration-token','messaging/invalid-argument'].includes(code)) invalid.push(tokens[i]);
+      if(!r.success && ['messaging/registration-token-not-registered','messaging/invalid-registration-token'].includes(r.error?.code)) invalid.push(tokens[i]);
     });
     if(invalid.length){db.fcmTokens[uid]=(db.fcmTokens[uid]||[]).filter(t=>!invalid.includes(t));save()}
-    if(response.failureCount)console.warn(`FCM: ${response.successCount} enviado(s), ${response.failureCount} falhou(aram) para ${uid}.`);
     return {sent:response.successCount,failed:response.failureCount};
-  }catch(e){console.error('Falha ao enviar FCM:',e.message);return {sent:0,failed:tokens.length,error:e.message};}
+  }catch(e){console.error('Falha ao enviar FCM:',e.message);return {sent:0,failed:tokens.length};}
 }
 
 app.post('/api/register',(req,res)=>{let {name,username,password}=req.body||{};name=String(name||'').trim();username=String(username||'').trim().toLowerCase().replace(/^@/,'');password=String(password||'');if(name.length<2||username.length<3||password.length<6)return res.status(400).json({error:'Use nome, usuário com pelo menos 3 caracteres e senha com 6 caracteres.'});if(!/^[a-z0-9._-]+$/.test(username))return res.status(400).json({error:'Usuário: apenas letras, números, ponto, _ ou -.'});if(db.users.some(u=>u.username===username))return res.status(409).json({error:'Esse usuário já existe.'});const x=hash(password),u={id:id(),name,username,status:'Disponível',photo:'',s:x.s,h:x.h,createdAt:Date.now()};db.users.push(u);db.contacts[u.id]=[];save();const token=id();sessions.set(token,u.id);db.sessions[token]=u.id;save();res.json({token,user:safe(u,true)});});
@@ -249,7 +246,6 @@ app.get('/api/firebase-config',(req,res)=>{const c=firebaseConfig();if(!c.apiKey
 app.get('/api/fcm/status',auth,(req,res)=>res.json({registered:(db.fcmTokens[req.user.id]||[]).length>0, firebase:firebaseReady}));
 app.post('/api/fcm/token',auth,(req,res)=>{const token=String(req.body?.token||'').trim();if(!token||token.length<20)return res.status(400).json({error:'Token FCM inválido.'});db.fcmTokens[req.user.id]??=[];const list=db.fcmTokens[req.user.id];if(!list.includes(token))list.push(token);db.fcmTokens[req.user.id]=list.slice(-10);save();res.json({ok:true});});
 app.delete('/api/fcm/token',auth,(req,res)=>{const token=String(req.body?.token||'').trim();if(token)db.fcmTokens[req.user.id]=(db.fcmTokens[req.user.id]||[]).filter(t=>t!==token);save();res.json({ok:true})});
-app.post('/api/fcm/test',auth,async(req,res)=>{const note=await pushUser(req.user.id,{title:'Linka',body:'Sua notificação do Linka está funcionando! 🔔',icon:'/icon-192.png',badge:'/icon-192.png',data:{type:'test'}});if(!note.sent)return res.status(503).json({ok:false,error:note.error||'Nenhum dispositivo FCM recebeu a mensagem.',details:note});res.json({ok:true,details:note});});
 app.get('/api/calls/pending',auth,(req,res)=>{const list=pendingCalls.get(req.user.id)||[];res.json(list);});
 app.get('/api/notifications',auth,(req,res)=>{const list=db.notifications[req.user.id]||[];res.json(list.slice(0,100));});
 app.post('/api/notifications/read-all',auth,(req,res)=>{const list=db.notifications[req.user.id]||[];list.forEach(n=>n.read=true);save();res.json({ok:true});});

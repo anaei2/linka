@@ -62,6 +62,7 @@ messaging.onBackgroundMessage((payload)=>{
 });
 self.addEventListener('notificationclick',(event)=>{event.notification.close();const d=event.notification.data||{};const url=d.chatId?'/?chat='+encodeURIComponent(d.chatId):'/';event.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(cs=>{for(const c of cs){if('focus' in c){c.navigate(url);return c.focus()}}return clients.openWindow(url)}));});`);
 });
+app.get('/privacy-policy',(req,res)=>res.sendFile(path.join(__dirname,'www','privacy-policy.html')));
 app.use(express.static(path.join(__dirname,'www')));
 let db={users:[],contacts:{},messages:{},sessions:{},fcmTokens:{},notifications:{},callHistory:{}};
 const pendingCalls=new Map();

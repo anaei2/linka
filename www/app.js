@@ -141,34 +141,95 @@ function statusViewer(list,index){
   draw();
 }
 async function statusView(){
-  setTab($('#statusTab'));
-  const list=$('#list');
+  setTab($('#statusTab')); const list=$('#list');
   if(!list)return;
-  list.innerHTML='<div class="empty">Carregando status...</div>';
-  let rows=[];
-  try{rows=await api('/api/statuses');}catch(e){list.innerHTML='<div class="empty">Não foi possível carregar os status.</div>';toast(e.message||'Erro ao carregar status');return;}
-  if(!rows.length){
-    list.innerHTML='<div class="statusEmpty"><div class="statusEmptyIcon">◌</div><h3>Nenhum status</h3><p>Seus contatos ainda não publicaram status.</p><button class="primary" id="newStatusEmpty">＋ Meu status</button></div>';
-    $('#newStatusEmpty')?.addEventListener('click',()=>statusComposer());
-    return;
+  list.innerHTML='<div class="statusHeader"><b>Status</b><button class="smallbtn" id="newStatus">＋ Meu status</button></div><div class="empty">Carregando status...</div>';
+  try{A.statuses=await api('/api/statuses');}catch(e){A.statuses=[];list.innerHTML='<div class="empty">Não foi possível carregar os status.</div>';return}
+  const me=A.statuses.filter(x=>String(x.user.id)===String(A.user.id));
+  const othersRaw=A.statuses.filter(x=>String(x.user.id)!==String(A.user.id));
+  const groups=[]; const byUser=new Map();
+  othersRaw.forEach(x=>{const key=String(x.user.id);if(!byUser.has(key)){const g={user:x.user,items:[]};byUser.set(key,g);groups.push(g)}byUser.get(key).items.push(x)});
+  list.innerHTML=`<div class="statusHeader"><b>Status</b><button class="smallbtn" id="newStatus">＋ Meu status</button></div>${me.length?`<button class="statusItem" id="myStatus">${av(me[0].user)}<span><b>Meu status</b><small>${me.length} status ${me.length===1?'publicado':'publicados'}${me[0].viewCount!=null?` · ${me.reduce((n,x)=>n+(x.viewCount||0),0)} visualizações`:''}</small></span></button>`:'<div class="empty">Você ainda não publicou um status.</div>'}<div class="statusSection">ATUALIZAÇÕES DOS CONTATOS</div>${groups.length?groups.map(g=>{const first=g.items[0];const allSeen=g.items.every(x=>x.viewedByMe);const idx=A.statuses.indexOf(first);return `<button class="statusItem ${allSeen?'statusSeen':''}" data-status-index="${idx}">${av(g.user)}<span><b>${esc(g.user.name)}</b><small>${g.items.length} ${g.items.length===1?'status':'status'}</small></span><em class="statusCount">${g.items.length}</em></button>`}).join(''):'<div class="empty">Nenhum contato publicou status nas últimas 24 horas.</div>'}`;
+  $('#newStatus').onclick=()=>statusEditor();
+  $('#myStatus')?.addEventListener('click',()=>statusViewer(me,0));
+  document.querySelectorAll('[data-status-index]').forEach(b=>b.onclick=()=>statusViewer(A.statuses,Number(b.dataset.statusIndex)));
+}
+
+function statusEditor(){
+  modal(`<h2>Meu status</h2><p class="muted">Cada publicação fica disponível por 24 horas. Você pode publicar vários status seguidos.</p><label class="statusCaptionLabel">Legenda<textarea id="statusText" maxlength="500" placeholder="Adicione uma legenda..."></textarea></label><label class="mediaLabel">Adicionar foto ou vídeo<input id="statusMedia" type="file" accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip,.rar" hidden></label><div id="statusPreview" class="statusPreview"></div><button class="primary" id="saveStatus">Publicar status</button><button class="danger" data-close>Cancelar</button>`);
+  const fileInput=$('#statusMedia'),preview=$('#statusPreview'); let mediaData='',mediaType='';
+  function showPreview(){if(!mediaData){preview.innerHTML='';return}preview.innerHTML=mediaType.startsWith('video/')?`<video controls playsinline src="${mediaData}"></video>`:`<img src="${mediaData}" alt="Prévia do status">`}
+  fileInput.onchange=()=>{const f=fileInput.files?.[0];if(!f)return;if(f.size>8*1024*1024){toast('A foto ou vídeo deve ter no máximo 8 MB.');fileInput.value='';return}const r=new FileReader();r.onload=()=>{mediaData=String(r.result||'');mediaType=f.type||'';showPreview()};r.readAsDataURL(f)};
+  $('#saveStatus').onclick=async()=>{const btn=$('#saveStatus');try{const text=$('#statusText').value.trim();if(!text&&!mediaData){toast('Adicione um texto, foto ou vídeo.');return}btn.disabled=true;btn.textContent='Publicando…';await api('/api/statuses',{method:'POST',body:{text,media:mediaData,mediaType}});$('#modal').innerHTML='';A.statuses=[];statusView();toast('Status publicado')}catch(e){btn.disabled=false;btn.textContent='Publicar status';toast(e.message)}};
+}
+
+function statusViewer(list,index){
+  if(!Array.isArray(list)||!list.length)return;
+  let current=Math.max(0,Math.min(index,list.length-1));
+  const root=$('#modal');
+  function draw(){
+    const x=list[current]; if(!x){return}
+    const isMine=String(x.user.id)===String(A.user.id);
+    if(!isMine&&!x.viewedByMe){x.viewedByMe=true;api('/api/statuses/'+x.user.id+'/'+encodeURIComponent(x.statusId)+'/view',{method:'POST'}).catch(()=>{}); }
+    const statusSrc=x.mediaUrl?(x.mediaUrl+'?token='+encodeURIComponent(A.token)):x.media; const media=x.mediaType?.startsWith('video/')?`<video id="statusVideo" class="statusFullMedia" autoplay playsinline src="${esc(statusSrc||'')}"></video>`:statusSrc?`<img class="statusFullMedia" src="${esc(statusSrc)}" alt="Status de ${esc(x.user.name)}">`:`<div class="statusTextOnly">${esc(x.text||'')}</div>`;
+    const progress=list.map((_,i)=>`<span class="statusProgressPart ${i<current?'done':i===current?'current':''}"><i></i></span>`).join('');
+    const liked=!!x.likedByMe;
+    root.innerHTML=`<div class="statusScreen"><div class="statusTop"><button class="statusBack" id="statusBack" aria-label="Voltar">‹</button><div class="statusIdentity">${av(x.user)}<div><b>${esc(x.user.name)}</b><small>${formatStatusTime(x.createdAt)}</small></div></div><button class="statusMore" id="statusMore" aria-label="Mais opções">⋮</button></div><div class="statusProgress">${progress}</div><div class="statusStage"><button class="statusTapZone statusPrev" id="statusPrev" aria-label="Status anterior"></button>${media}<button class="statusTapZone statusNext" id="statusNext" aria-label="Próximo status"></button>${x.text?`<div class="statusCaptionOverlay">${esc(x.text)}</div>`:''}</div><div class="statusBottom"><button class="statusReply" id="statusReply"><span>Responder</span></button><button class="statusHeart ${liked?'liked':''}" id="statusHeart" aria-label="${liked?'Descurtir':'Curtir'}"><svg viewBox="0 0 24 24"><path d="M20.8 8.9c0 5.1-8.8 10-8.8 10s-8.8-4.9-8.8-10A4.7 4.7 0 0 1 8 4.2c1.5 0 2.8.7 4 2 1.2-1.3 2.5-2 4-2a4.7 4.7 0 0 1 4.8 4.7Z"/></svg></button></div></div>`;
+    $('#statusBack').onclick=()=>root.innerHTML='';
+    $('#statusViewCount')?.addEventListener('click',async()=>{try{const d=await api('/api/statuses/'+x.user.id+'/'+encodeURIComponent(x.statusId)+'/views');modal(`<div class="statusViewsSheet"><h2>Visualizações</h2><p class="muted">${d.count} pessoa(s) viu seu status.</p><div class="statusViewsList">${d.viewers.length?d.viewers.map(v=>`<div class="statusViewerRow">${av(v)}<span><b>${esc(v.name)}</b><small>@${esc(v.username)}</small></span></div>`).join(''):'<p class="muted">Ainda ninguém viu seu status.</p>'}</div><button class="danger" data-close>Fechar</button></div>`)}catch(e){toast(e.message)}});
+    $('#statusPrev').onclick=()=>{if(current>0){current--;draw()}};
+    $('#statusNext').onclick=()=>{if(current<list.length-1){current++;draw()}else root.innerHTML=''};
+    $('#statusReply').onclick=()=>{root.innerHTML='';openChat(x.user.id);setTimeout(()=>{const input=$('#msg');if(input){const prefix=x.text?`Respondendo ao status: “${x.text.slice(0,140)}”`:'Respondendo ao seu status';input.value=prefix;input.focus();input.setSelectionRange(input.value.length,input.value.length)}},120)};
+    $('#statusHeart').onclick=async()=>{if(isMine)return;try{const r=await api('/api/statuses/'+x.user.id+'/'+encodeURIComponent(x.statusId)+'/like',{method:'POST'});x.likedByMe=r.liked;x.likeCount=r.likeCount;draw()}catch(e){toast(e.message)}};
+    $('#statusMore').onclick=()=>{if(!isMine)return;modal(`<div class="statusDeleteSheet"><div class="statusDeleteTitle">Meu status</div><button class="menurow" id="statusViewsNow">Visualizações</button><button class="menurow statusDeleteAction" id="deleteStatusNow">Apagar status</button><button class="menurow" data-close>Cancelar</button></div>`);$('#statusViewsNow').onclick=async()=>{try{const d=await api('/api/statuses/'+x.user.id+'/'+encodeURIComponent(x.statusId)+'/views');modal('<div class="statusViewsSheet"><h2>Visualizações</h2><p class="muted">'+d.count+' pessoa(s) viu seu status.</p><div class="statusViewsList">'+(d.viewers.length?d.viewers.map(v=>'<div class="statusViewerRow">'+av(v)+'<span><b>'+esc(v.name)+'</b><small>@'+esc(v.username)+'</small></span></div>').join(''):'<p class="muted">Ainda ninguém viu seu status.</p>')+'</div><button class="danger" data-close>Fechar</button></div>')}catch(e){toast(e.message)}};$('#deleteStatusNow').onclick=async()=>{try{await api('/api/statuses/'+encodeURIComponent(x.statusId),{method:'DELETE'});$('#modal').innerHTML='';await statusView();toast('Status apagado')}catch(e){toast(e.message)}}};
+    const progressBar=$('.statusProgressPart.current i');
+    const advanceStatus=()=>{if(current<list.length-1){current++;draw()}else{root.innerHTML=''}};
+    // Segurar o status pausa tudo e esconde a interface, como no WhatsApp.
+    // Ao soltar, o status continua exatamente de onde parou.
+    let holdTimer=null, holding=false;
+    const stage=$('.statusStage');
+    const pauseStatus=()=>{
+      if(holding)return;
+      holding=true;
+      if(stage) stage.closest('.statusScreen')?.classList.add('holding');
+      if(progressBar) progressBar.style.animationPlayState='paused';
+      const video=$('#statusVideo');
+      if(video) video.pause();
+    };
+    const resumeStatus=()=>{
+      clearTimeout(holdTimer);
+      if(!holding)return;
+      holding=false;
+      if(stage) stage.closest('.statusScreen')?.classList.remove('holding');
+      if(progressBar) progressBar.style.animationPlayState='running';
+      const video=$('#statusVideo');
+      if(video) video.play().catch(()=>{});
+    };
+    let swipeStartY=0, swipeStartX=0;
+    if(stage){
+      stage.addEventListener('pointerdown',(ev)=>{swipeStartY=ev.clientY;swipeStartX=ev.clientX;
+        clearTimeout(holdTimer);
+        holdTimer=setTimeout(pauseStatus,180);
+      },{passive:true});
+      stage.addEventListener('pointerup',(ev)=>{const dy=ev.clientY-swipeStartY,dx=ev.clientX-swipeStartX;clearTimeout(holdTimer);if(isMine&&dy<-70&&Math.abs(dy)>Math.abs(dx)){resumeStatus();$('#statusViewCount')?.click();return}resumeStatus()},{passive:true});
+      stage.addEventListener('pointercancel',resumeStatus,{passive:true});
+      stage.addEventListener('pointerleave',()=>{if(holding)resumeStatus()},{passive:true});
+    }
+    if(progressBar) progressBar.onanimationend=advanceStatus;
+    const v=$('#statusVideo');
+    if(v){
+      v.onloadedmetadata=()=>{
+        if(Number.isFinite(v.duration)&&v.duration>0&&progressBar){
+          progressBar.style.animationDuration=v.duration+'s';
+        }
+      };
+      v.play().catch(()=>{});
+      v.onended=advanceStatus;
+    }
   }
-  const byUser=new Map();
-  rows.forEach(x=>{const id=String(x.user.id);if(!byUser.has(id))byUser.set(id,{user:x.user,items:[]});byUser.get(id).items.push(x)});
-  list.innerHTML=`<div class="statusListHead"><b>Status</b><button class="smallbtn" id="newStatus">＋ Meu status</button></div>`+Array.from(byUser.values()).map(g=>{
-    const latest=g.items[g.items.length-1];
-    const mine=String(g.user.id)===String(A.user.id);
-    const unread=g.items.some(x=>!mine&&!x.viewedByMe);
-    const count=g.items.length>1?`<small>${g.items.length} status</small>`:'';
-    return `<button class="statusRow ${unread?'unread':''}" type="button" data-status-user="${esc(g.user.id)}"><div class="statusAvatarWrap">${av(g.user,true)}<span class="statusRing"></span></div><div class="statusRowInfo"><b>${mine?'Meu status':esc(g.user.name)}</b><span>${latest.text?esc(latest.text.slice(0,70)):(latest.mediaType?.startsWith('video/')?'Vídeo':'Foto')} · ${formatStatusTime(latest.createdAt)}</span>${count}</div></button>`;
-  }).join('');
-  $('#newStatus')?.addEventListener('click',()=>statusComposer());
-  list.querySelectorAll('[data-status-user]').forEach(b=>b.onclick=()=>{const uid=String(b.dataset.statusUser);const g=byUser.get(uid);if(g)statusViewer(g.items,0)});
+  function formatStatusTime(ts){try{const d=new Date(Number(ts));const now=new Date();const same=d.toDateString()===now.toDateString();return same?'Hoje '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}catch{return ''}}
+  draw();
 }
-function statusComposer(){
-  modal(`<div class="statusComposer"><h2>Novo status</h2><label>Legenda<textarea id="statusText" maxlength="500" placeholder="Escreva uma legenda..."></textarea></label><label>Foto ou vídeo<input id="statusMedia" type="file" accept="image/*,video/*"></label><button class="primary" id="publishStatus">Publicar status</button><button class="danger" data-close>Cancelar</button></div>`);
-  $('#publishStatus').onclick=async()=>{const text=$('#statusText').value.trim(),file=$('#statusMedia').files?.[0];if(!text&&!file){toast('Adicione uma legenda ou uma foto/vídeo');return}try{let media='',mediaType='';if(file){if(file.size>8*1024*1024)throw new Error('O arquivo é muito grande.');mediaType=file.type;media=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result||''));r.onerror=()=>reject(new Error('Não foi possível ler o arquivo.'));r.readAsDataURL(file)})}await api('/api/statuses',{method:'POST',body:{text,media,mediaType}});$('#modal').innerHTML='';await statusView();toast('Status publicado');}catch(e){toast(e.message||'Não foi possível publicar o status')}};
-}
-function formatStatusTime(ts){try{const d=new Date(Number(ts));const now=new Date();const same=d.toDateString()===now.toDateString();return same?'Hoje '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}catch{return ''}}
 function appSettings(){try{return JSON.parse(localStorage.getItem('linka_settings')||'{}')}catch{return {}}}
 function saveAppSettings(x){localStorage.setItem('linka_settings',JSON.stringify(x));applyAppSettings()}
 function applyAppSettings(){const s=appSettings();document.body.classList.toggle('light-theme',s.theme==='light');document.body.classList.toggle('dark-theme',s.theme!=='light');document.documentElement.style.setProperty('--linka-font-size',(s.fontSize||16)+'px')}
@@ -353,7 +414,7 @@ function messageMenu(m){
  document.querySelectorAll('[data-forward-msg]').forEach(b=>b.onclick=()=>{modal(`<div class="forwardSheet"><h3>Encaminhar para</h3>${A.contacts.filter(c=>String(c.id)!==String(A.active?.id)).map(c=>`<button class="menurow" data-forward-target="${esc(c.id)}">${av(c)}<span>${esc(c.name)}</span></button>`).join('')||'<p class="muted">Nenhum outro contato.</p>'}<button class="danger" data-close>Cancelar</button></div>`);document.querySelectorAll('[data-forward-target]').forEach(q=>q.onclick=async()=>{try{const u=await api(`/api/messages/${A.active.id}/${m.id}/forward`,{method:'POST',body:{targetId:q.dataset.forwardTarget}});$('#modal').innerHTML='';clearSelectedMessage();toast('Mensagem encaminhada')}catch(e){toast(e.message)}})});
  document.querySelectorAll('[data-msg-delete]').forEach(b=>b.onclick=async()=>{try{const updated=await api(`/api/messages/${A.active.id}/${m.id}`,{method:'DELETE',body:{mode:b.dataset.mode}});if(b.dataset.mode==='me')A.messages=A.messages.filter(x=>x.id!==m.id);else{const i=A.messages.findIndex(x=>x.id===m.id);if(i>=0)A.messages[i]=updated}$('#modal').innerHTML='';clearSelectedMessage();drawMessages()}catch(e){toast(e.message)}});
 }
-function drawMessages(){const box=$('#msgs');if(!box)return;box.innerHTML=A.messages.map(bubble).join('');box.scrollTop=box.scrollHeight;if(A.active)applyChatTheme(A.active.id);else applyChatBg();box.querySelectorAll('[data-file]').forEach(b=>b.onclick=async()=>{try{window.open('/api/file/'+encodeURIComponent(b.dataset.file)+'?token='+encodeURIComponent(A.token),'_blank')}catch{}});box.querySelectorAll('.bubble').forEach(card=>{let holdTimer=null;const start=e=>{if(e.target.closest('button,a,audio'))return;clearTimeout(holdTimer);holdTimer=setTimeout(()=>{const m=A.messages.find(x=>String(x.id)===String(card.dataset.mid));if(m)selectMessage(m,card)},520)};const cancel=()=>{clearTimeout(holdTimer);holdTimer=null};card.addEventListener('pointerdown',start);card.addEventListener('pointerup',cancel);card.addEventListener('pointercancel',cancel);card.addEventListener('pointerleave',cancel);card.addEventListener('contextmenu',e=>{e.preventDefault();const m=A.messages.find(x=>String(x.id)===String(card.dataset.mid));if(m)selectMessage(m,card)});});box.querySelectorAll('.audioBubble').forEach(card=>{const audio=card.querySelector('.audioEl'),play=card.querySelector('.audioPlay'),progress=card.querySelector('.audioProgress'),cur=card.querySelector('.audioCurrent'),dur=card.querySelector('.audioDuration');const fmt=v=>{v=Math.max(0,Math.floor(v||0));return Math.floor(v/60)+':'+String(v%60).padStart(2,'0')};audio.onloadedmetadata=()=>{if(Number.isFinite(audio.duration)&&audio.duration>0)dur.textContent=fmt(audio.duration);};audio.ontimeupdate=()=>{cur.textContent=fmt(audio.currentTime);progress.style.width=audio.duration?((audio.currentTime/audio.duration)*100)+'%':'0%'};audio.onended=()=>{play.textContent='▶';progress.style.width='0%';cur.textContent='0:00'};play.onclick=()=>{document.querySelectorAll('.audioEl').forEach(a=>{if(a!==audio)a.pause()});if(audio.paused){audio.play().then(()=>play.textContent='❚❚').catch(()=>toast('Não foi possível reproduzir o áudio'))}else{audio.pause();play.textContent='▶'}}});box.querySelectorAll('.mediaBubble .chatMedia').forEach(media=>{media.addEventListener('click',e=>{if(media.tagName==='VIDEO' && e.target.closest('video') && e.offsetX>0){if(media.controls && e.detail===1){/* still open on tap; controls remain available in viewer */}}const src=media.currentSrc||media.src;if(!src)return;openMediaViewer(src,media.tagName==='VIDEO',media.getAttribute('alt')||'Mídia');e.preventDefault();e.stopPropagation()})});box.querySelectorAll('.audioBubble').forEach(card=>{const audio=card.querySelector('.audioEl'),play=card.querySelector('.audioPlay'),progress=card.querySelector('.audioProgress'),cur=card.querySelector('.audioCurrent'),dur=card.querySelector('.audioDuration');const fmt=v=>{v=Math.max(0,Math.floor(v||0));return Math.floor(v/60)+':'+String(v%60).padStart(2,'0')};audio.onloadedmetadata=()=>{if(Number.isFinite(audio.duration)&&audio.duration>0)dur.textContent=fmt(audio.duration);};audio.ontimeupdate=()=>{cur.textContent=fmt(audio.currentTime);progress.style.width=audio.duration?((audio.currentTime/audio.duration)*100)+'%':'0%'};audio.onended=()=>{play.textContent='▶';progress.style.width='0%';cur.textContent='0:00'};play.onclick=()=>{document.querySelectorAll('.audioEl').forEach(a=>{if(a!==audio)a.pause()});if(audio.paused){audio.play().then(()=>play.textContent='❚❚').catch(()=>toast('Não foi possível reproduzir o áudio'))}else{audio.pause();play.textContent='▶'}}})}
+function drawMessages(){const box=$('#msgs');if(!box)return;box.innerHTML=A.messages.map(bubble).join('');box.scrollTop=box.scrollHeight;box.onclick=e=>{if(A.selectedMessageId&&!e.target.closest('.bubble'))clearSelectedMessage()};if(A.active)applyChatTheme(A.active.id);else applyChatBg();box.querySelectorAll('[data-file]').forEach(b=>b.onclick=async()=>{try{window.open('/api/file/'+encodeURIComponent(b.dataset.file)+'?token='+encodeURIComponent(A.token),'_blank')}catch{}});box.querySelectorAll('.bubble').forEach(card=>{let holdTimer=null;const start=e=>{if(e.target.closest('button,a,audio'))return;clearTimeout(holdTimer);holdTimer=setTimeout(()=>{const m=A.messages.find(x=>String(x.id)===String(card.dataset.mid));if(m)selectMessage(m,card)},520)};const cancel=()=>{clearTimeout(holdTimer);holdTimer=null};card.addEventListener('pointerdown',start);card.addEventListener('pointerup',cancel);card.addEventListener('pointercancel',cancel);card.addEventListener('pointerleave',cancel);card.addEventListener('contextmenu',e=>{e.preventDefault();const m=A.messages.find(x=>String(x.id)===String(card.dataset.mid));if(m)selectMessage(m,card)});});box.querySelectorAll('.audioBubble').forEach(card=>{const audio=card.querySelector('.audioEl'),play=card.querySelector('.audioPlay'),progress=card.querySelector('.audioProgress'),cur=card.querySelector('.audioCurrent'),dur=card.querySelector('.audioDuration');const fmt=v=>{v=Math.max(0,Math.floor(v||0));return Math.floor(v/60)+':'+String(v%60).padStart(2,'0')};audio.onloadedmetadata=()=>{if(Number.isFinite(audio.duration)&&audio.duration>0)dur.textContent=fmt(audio.duration);};audio.ontimeupdate=()=>{cur.textContent=fmt(audio.currentTime);progress.style.width=audio.duration?((audio.currentTime/audio.duration)*100)+'%':'0%'};audio.onended=()=>{play.textContent='▶';progress.style.width='0%';cur.textContent='0:00'};play.onclick=()=>{document.querySelectorAll('.audioEl').forEach(a=>{if(a!==audio)a.pause()});if(audio.paused){audio.play().then(()=>play.textContent='❚❚').catch(()=>toast('Não foi possível reproduzir o áudio'))}else{audio.pause();play.textContent='▶'}}});box.querySelectorAll('.mediaBubble .chatMedia').forEach(media=>{media.addEventListener('click',e=>{if(media.tagName==='VIDEO' && e.target.closest('video') && e.offsetX>0){if(media.controls && e.detail===1){/* still open on tap; controls remain available in viewer */}}const src=media.currentSrc||media.src;if(!src)return;openMediaViewer(src,media.tagName==='VIDEO',media.getAttribute('alt')||'Mídia');e.preventDefault();e.stopPropagation()})});box.querySelectorAll('.audioBubble').forEach(card=>{const audio=card.querySelector('.audioEl'),play=card.querySelector('.audioPlay'),progress=card.querySelector('.audioProgress'),cur=card.querySelector('.audioCurrent'),dur=card.querySelector('.audioDuration');const fmt=v=>{v=Math.max(0,Math.floor(v||0));return Math.floor(v/60)+':'+String(v%60).padStart(2,'0')};audio.onloadedmetadata=()=>{if(Number.isFinite(audio.duration)&&audio.duration>0)dur.textContent=fmt(audio.duration);};audio.ontimeupdate=()=>{cur.textContent=fmt(audio.currentTime);progress.style.width=audio.duration?((audio.currentTime/audio.duration)*100)+'%':'0%'};audio.onended=()=>{play.textContent='▶';progress.style.width='0%';cur.textContent='0:00'};play.onclick=()=>{document.querySelectorAll('.audioEl').forEach(a=>{if(a!==audio)a.pause()});if(audio.paused){audio.play().then(()=>play.textContent='❚❚').catch(()=>toast('Não foi possível reproduzir o áudio'))}else{audio.pause();play.textContent='▶'}}})}
 function openMediaViewer(src,isVideo=false,alt='Mídia'){
   let v=$('#mediaViewer');
   if(!v){v=document.createElement('div');v.id='mediaViewer';v.className='mediaViewer';v.innerHTML='<button class="mediaViewerClose" type="button" aria-label="Fechar">×</button><div class="mediaViewerStage"></div>';document.body.appendChild(v);v.addEventListener('click',e=>{if(e.target===v||e.target.classList.contains('mediaViewerStage'))closeMediaViewer()});v.querySelector('.mediaViewerClose').onclick=closeMediaViewer}

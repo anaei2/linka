@@ -378,11 +378,9 @@ async function notificationsModal(){
   const permission=('Notification' in window)?Notification.permission:'unsupported';
   const activate=permission!=='granted'?'<button class="primary" id="activateNotif">Ativar notificações</button>':'';
   const status=window.__linkaNotificationsReady?'🟢 FCM conectado':'⚪ FCM não conectado';
-  modal(`<h2>Notificações <span class="notifcount">${unreadCount()}</span></h2><p class="muted">${status}</p>${permission==='denied'?'<p class="muted">As notificações estão bloqueadas. Verifique as permissões do aplicativo.</p>':''}<div class="notiflist">${rows}</div>${activate}<button class="primary" id="testNotif">Testar notificação</button><button class="primary" id="diagNotif">Diagnóstico FCM</button><div id="fcmDiagBox"></div><button class="primary" id="readall">Marcar todas como lidas</button><button class="danger" data-close>Fechar</button>`);
+  modal(`<h2>Notificações <span class="notifcount">${unreadCount()}</span></h2><p class="muted">${status}</p>${permission==='denied'?'<p class="muted">As notificações estão bloqueadas neste navegador. Permita as notificações nas configurações do site e tente novamente.</p>':''}<div class="notiflist">${rows}</div>${activate}<button class="primary" id="testNotif">Testar notificação</button><button class="primary" id="readall">Marcar todas como lidas</button><button class="danger" data-close>Fechar</button>`);
   const act=$('#activateNotif');
   if(act)act.onclick=async()=>{await setupNotifications();notificationsModal()};
-  const diag=$('#diagNotif');
-  if(diag)diag.onclick=async()=>{diag.disabled=true;diag.textContent='Analisando…';try{const d=await collectFcmDiagnostics();const box=$('#fcmDiagBox');if(box)box.innerHTML=renderFcmDiagnostic(d)}catch(e){toast('Não foi possível concluir o diagnóstico')}finally{diag.disabled=false;diag.textContent='Diagnóstico FCM'}};
   const test=$('#testNotif');
   if(test)test.onclick=async()=>{
     test.disabled=true; test.textContent='Enviando…';
@@ -401,111 +399,39 @@ function setChatTheme(id,x){try{localStorage.setItem(chatThemeKey(id),JSON.strin
 function applyChatTheme(id){const box=$('#msgs');if(!box)return;let theme={};try{theme=JSON.parse(localStorage.getItem(chatThemeKey(id))||'{}')}catch{};box.style.setProperty('--chat-font-size',(theme.font||16)+'px');box.dataset.bubbleStyle=theme.style||'default';const light=document.body.classList.contains('light-theme');const bg=getChatTheme(id);const fallback=light?'linear-gradient(180deg,#e9edef,#f5f7f8)':'radial-gradient(circle at top,#14232a,#0b141a 60%)';box.style.background=bg&&bg.startsWith('data:')?`url(${bg}) center/cover fixed, ${fallback}`:bg==='gradient'?(light?'linear-gradient(135deg,#dfeeea,#f7fbfa)':'linear-gradient(135deg,#081b22,#162a31)'):bg==='dots'?(light?'radial-gradient(circle at 20px 20px,#17212622 2px,transparent 3px) 0 0/32px 32px,#eef2f3':'radial-gradient(circle at 20px 20px,#ffffff18 2px,transparent 3px) 0 0/32px 32px,#0b141a'):fallback}
 function chatThemeModal(){if(!A.active)return;const id=A.active.id;const cur=(()=>{try{return JSON.parse(localStorage.getItem(chatThemeKey(id))||'{}')}catch{return {}}})();modal(`<h2>Estilo da conversa</h2><div class="bggrid"><button class="bgpick" data-chat-bg="">Padrão</button><button class="bgpick" data-chat-bg="gradient">Escuro</button><button class="bgpick" data-chat-bg="dots">Pontos</button></div><label>Cor dos balões<select id="bubbleStyle"><option value="default">Padrão</option><option value="blue">Azul</option><option value="purple">Roxo</option><option value="pink">Rosa</option></select></label><label>Tamanho da fonte<select id="chatFont"><option value="14">Pequeno</option><option value="16">Normal</option><option value="18">Grande</option><option value="20">Muito grande</option></select></label><label>Imagem de fundo<input id="chatWall" type="file" accept="image/*"></label><button class="primary" id="saveChatTheme">Salvar</button><button class="danger" data-close>Cancelar</button>`);$('#bubbleStyle').value=cur.style||'default';$('#chatFont').value=String(cur.font||16);let chosen=cur.bg||'';document.querySelectorAll('[data-chat-bg]').forEach(b=>b.onclick=()=>chosen=b.dataset.chatBg);$('#chatWall').onchange=e=>{const f=e.target.files?.[0];if(f){const r=new FileReader();r.onload=()=>chosen=r.result;r.readAsDataURL(f)}};$('#saveChatTheme').onclick=()=>{const x={bg:chosen,style:$('#bubbleStyle').value,font:Number($('#chatFont').value)};setChatTheme(id,x);$('#modal').innerHTML='';applyChatTheme(id);toast('Estilo da conversa salvo')}}
 function chatMenu(){if(!A.active)return;const id=A.active.id;modal(`<h2>Opções da conversa</h2><button class="menurow" id="clearChat">Limpar conversa</button><button class="menurow" id="chatTheme">Tema da conversa</button><button class="danger" data-close>Cancelar</button>`);$('#clearChat').onclick=async()=>{if(!confirm('Limpar todas as mensagens desta conversa?'))return;try{await api('/api/messages/'+id,{method:'DELETE'});A.messages=[];$('#modal').innerHTML='';drawMessages();toast('Conversa limpa')}catch(e){toast(e.message)}};$('#chatTheme').onclick=()=>chatThemeModal()}
-function fcmDiagMessage(){
-  const d=window.__linkaFcmDiagnostic||{};
-  if(d.reason)return d.reason;
-  if(d.firebaseSupported===false)return 'O Firebase Messaging informou que este ambiente não é compatível com FCM Web.';
-  if(d.pushManager===false)return 'Este APK não expõe a Push API necessária para o FCM Web. As notificações Android podem estar ativadas, mas isso é diferente de Web Push.';
-  if(d.tokenRegistered===false)return 'O ambiente foi carregado, mas nenhum token FCM foi registrado no servidor.';
-  return 'Nenhum erro detalhado foi registrado ainda.';
-}
-
-async function collectFcmDiagnostics(){
-  const d={
-    time:new Date().toISOString(),
-    notification:('Notification' in window)?Notification.permission:'unsupported',
-    serviceWorker:'serviceWorker' in navigator,
-    pushManager:!!(window.PushManager && navigator.serviceWorker),
-    webToApk:!!window.WebToApk,
-    userAgent:navigator.userAgent,
-    firebaseLoaded:!!window.firebase,
-    firebaseSupported:null,
-    swState:null,
-    serverRegistered:null,
-    firebaseReady:null,
-    tokenRegistered:!!window.__linkaFcmToken,
-    reason:window.__linkaFcmLastError||''
-  };
-  try{
-    if(window.firebase && firebase.messaging && typeof firebase.messaging.isSupported==='function') d.firebaseSupported=await firebase.messaging.isSupported();
-  }catch(e){d.firebaseSupported=false;d.reason=d.reason||('firebase.messaging.isSupported: '+(e.message||e))}
-  try{
-    if('serviceWorker' in navigator){
-      const r=await navigator.serviceWorker.getRegistration('/');
-      d.swState=r?(r.active?.state||r.installing?.state||r.waiting?.state||'registered'):'not-registered';
-    }
-  }catch(e){d.swState='error';d.reason=d.reason||('service worker: '+(e.message||e))}
-  try{
-    const st=await api('/api/fcm/status');
-    d.serverRegistered=!!st.registered;
-    d.firebaseReady=!!st.firebase;
-    d.tokenRegistered=d.tokenRegistered||!!st.registered;
-  }catch(e){d.reason=d.reason||('servidor: '+(e.message||e))}
-  if(!d.reason){
-    if(d.notification!=='granted')d.reason='A permissão Android/Web de notificações não está como granted.';
-    else if(!d.serviceWorker)d.reason='Service Worker não está disponível neste ambiente.';
-    else if(d.firebaseLoaded!==true)d.reason='O Firebase JavaScript não foi carregado.';
-    else if(d.firebaseSupported===false)d.reason='Firebase Messaging não é compatível com este WebView/ambiente.';
-    else if(d.pushManager===false)d.reason='A Push API necessária para FCM Web não está disponível neste APK.';
-    else if(d.serverRegistered===false)d.reason='O token não está registrado no servidor do Linka.';
-  }
-  window.__linkaFcmDiagnostic=d;
-  return d;
-}
-
-function renderFcmDiagnostic(d){
-  const val=x=>x===true?'SIM':x===false?'NÃO':(x??'—');
-  return `<div class="muted" style="text-align:left;line-height:1.55;margin:8px 0"><b>Diagnóstico FCM</b><br>Notificações: ${esc(String(val(d.notification)))}<br>Service Worker: ${esc(String(val(d.serviceWorker)))}<br>Push API: ${esc(String(val(d.pushManager)))}<br>Firebase carregado: ${esc(String(val(d.firebaseLoaded)))}<br>Firebase compatível: ${esc(String(val(d.firebaseSupported)))}<br>Service Worker registrado: ${esc(String(val(d.swState)))}<br>Firebase no servidor: ${esc(String(val(d.firebaseReady)))}<br>Token no servidor: ${esc(String(val(d.serverRegistered)))}<br><br><b>Resultado:</b> ${esc(fcmDiagMessage())}</div>`;
-}
-
 async function setupNotifications(opts={}){
-  if(!('Notification' in window)){window.__linkaFcmLastError='A API de notificações não existe neste ambiente.';if(!opts.silent)toast('Este dispositivo não suporta notificações');return false}
+  if(!('Notification' in window)){toast('Este dispositivo não suporta notificações');return false}
   try{
     let permission=Notification.permission;
-    if(permission==='default' && !opts.noPrompt) permission=await Notification.requestPermission();
-    if(permission!=='granted'){
-      window.__linkaFcmLastError='Permissão de notificações: '+permission;
-      if(permission==='denied'&&!opts.silent)toast('Ative as notificações nas configurações do aplicativo.');
-      return false;
-    }
-    if(!('serviceWorker' in navigator))throw new Error('Service Worker não disponível no APK.');
+    if(permission==='default' && !opts.noPrompt){ permission=await Notification.requestPermission(); }
+    if(permission!=='granted'){ if(permission==='denied')toast('Ative as notificações nas configurações do site.'); return false; }
+    if(!('serviceWorker' in navigator)){toast('Seu navegador não suporta notificações em segundo plano');return false}
     const cfg=await api('/api/firebase-config');
-    if(!window.firebase)throw new Error('Firebase JavaScript não carregou.');
+    if(!window.firebase){toast('Firebase não carregou');return false}
     if(!firebase.apps.length)firebase.initializeApp(cfg);
-    if(firebase.messaging && typeof firebase.messaging.isSupported==='function'){
-      const supported=await firebase.messaging.isSupported();
-      if(!supported)throw new Error('Firebase Messaging não é compatível com este ambiente WebView.');
-    }
-    if(!window.PushManager || !navigator.serviceWorker)throw new Error('A Push API não está disponível neste APK.');
     const messaging=firebase.messaging();
     const reg=await navigator.serviceWorker.register('/firebase-messaging-sw.js',{scope:'/'});
     await navigator.serviceWorker.ready;
     const token=await messaging.getToken({vapidKey:cfg.vapidKey,serviceWorkerRegistration:reg});
-    if(!token)throw new Error('Firebase não gerou um token FCM neste ambiente.');
-    await api('/api/fcm/token',{method:'POST',body:{token}});
-    window.__linkaFcmToken=token;
-    window.__linkaFcmLastError='';
+    if(!token)throw new Error('Token FCM não foi gerado');
+    if(token!==window.__linkaFcmToken){
+      await api('/api/fcm/token',{method:'POST',body:{token}});
+      window.__linkaFcmToken=token;
+    }
     if(!window.__linkaFcmBound){
       window.__linkaFcmBound=true;
       messaging.onMessage(payload=>{
-        const n=payload.notification||{};const data=payload.data||{};
-        const title=data.title||n.title||'Linka';const body=data.body||n.body||'Nova notificação';
-        if(document.visibilityState==='visible')toast(title+': '+body);
+        const n=payload.notification||{}; const data=payload.data||{};
+        const title=data.title||n.title||'Linka'; const body=data.body||n.body||'Nova notificação';
+        if(document.visibilityState==='visible') toast(title+': '+body);
         loadNotifications().then(updateNotifBell).catch(()=>{});
       });
-      if(typeof messaging.onTokenRefresh==='function')messaging.onTokenRefresh(async()=>{try{const t=await messaging.getToken({vapidKey:cfg.vapidKey,serviceWorkerRegistration:reg});if(t&&t!==window.__linkaFcmToken){await api('/api/fcm/token',{method:'POST',body:{token:t}});window.__linkaFcmToken=t}}catch(e){window.__linkaFcmLastError='Atualização do token: '+(e.message||e);console.warn('FCM token refresh:',e)}});
+      if(typeof messaging.onTokenRefresh==='function') messaging.onTokenRefresh(async()=>{
+        try{const t=await messaging.getToken({vapidKey:cfg.vapidKey,serviceWorkerRegistration:reg});if(t&&t!==window.__linkaFcmToken){await api('/api/fcm/token',{method:'POST',body:{token:t}});window.__linkaFcmToken=t}}catch(e){console.warn('FCM token refresh:',e)}});
     }
     window.__linkaNotificationsReady=true;
-    await collectFcmDiagnostics();
     return true;
-  }catch(e){
-    window.__linkaNotificationsReady=false;
-    window.__linkaFcmLastError=String(e?.message||e);
-    console.error('FCM:',e);
-    await collectFcmDiagnostics().catch(()=>{});
-    if(!opts.silent)toast('FCM: '+window.__linkaFcmLastError);
-    return false;
-  }
+  }catch(e){console.error('FCM:',e); if(!opts.silent)toast('Não foi possível ativar as notificações'); return false}
 }
 
 async function initNotifications(){

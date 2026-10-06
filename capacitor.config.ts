@@ -1,15 +1,12 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.almeida.chat',
-  appName: 'Almeida Chat',
+  appId: 'com.linka.chat',
+  appName: 'Linka',
   webDir: 'www',
   server: {
-    url: 'https://almeida-chat.onrender.com/',
+    url: 'https://linka-8llq.onrender.com/',
     cleartext: false
-  },
-  android: {
-    allowMixedContent: false
   }
 };
 

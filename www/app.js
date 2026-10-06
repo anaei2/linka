@@ -375,22 +375,12 @@ async function notificationsModal(){
   await loadNotifications();
   const escN=s=>esc(s);
   const rows=A.notifications.length?A.notifications.map(n=>`<button class="notifrow ${n.read?'':'unread'}" data-notif="${escN(n.id)}" data-chat="${escN(n.chatId||'')}"><span class="notificon">${n.kind==='contact'?'👤':'💬'}</span><span><b>${escN(n.title)}</b><small>${escN(n.body)}</small><em>${new Date(n.createdAt).toLocaleString('pt-BR')}</em></span></button>`).join(''):'<p class="muted">Nenhuma notificação.</p>';
-  const permission=('Notification' in window)?Notification.permission:'unsupported';
-  const activate=permission!=='granted'?'<button class="primary" id="activateNotif">Ativar notificações</button>':'';
-  const status=window.__linkaNotificationsReady?'🟢 FCM conectado':'⚪ FCM não conectado';
-  modal(`<h2>Notificações <span class="notifcount">${unreadCount()}</span></h2><p class="muted">${status}</p>${permission==='denied'?'<p class="muted">As notificações estão bloqueadas neste navegador. Permita as notificações nas configurações do site e tente novamente.</p>':''}<div class="notiflist">${rows}</div>${activate}<button class="primary" id="testNotif">Testar notificação</button><button class="primary" id="readall">Marcar todas como lidas</button><button class="danger" data-close>Fechar</button>`);
-  const act=$('#activateNotif');
-  if(act)act.onclick=async()=>{await setupNotifications();notificationsModal()};
-  const test=$('#testNotif');
-  if(test)test.onclick=async()=>{
-    test.disabled=true; test.textContent='Enviando…';
-    try{await setupNotifications({noPrompt:true});const r=await api('/api/fcm/test',{method:'POST'});toast(r.ok?'Notificação enviada. Verifique o aparelho.':'Não foi possível enviar')}catch(e){toast(e.message||'FCM não está configurado')}finally{test.disabled=false;test.textContent='Testar notificação'}
-  };
+  modal(`<h2>Notificações <span class="notifcount">${unreadCount()}</span></h2><p class="muted">Notificações internas do Linka</p><div class="notiflist">${rows}</div><button class="primary" id="readall">Marcar todas como lidas</button><button class="danger" data-close>Fechar</button>`);
   document.querySelectorAll('[data-notif]').forEach(b=>b.onclick=async()=>{const id=b.dataset.notif;try{await api('/api/notifications/'+id+'/read',{method:'POST'})}catch{};const chat=b.dataset.chat;if(chat){$('#modal').innerHTML='';openChat(chat)}else notificationsModal()});
   $('#readall').onclick=async()=>{try{await api('/api/notifications/read-all',{method:'POST'})}catch{};notificationsModal()}
 }
 function updateNotifBell(){const b=$('#notifBell');if(!b)return;const n=unreadCount();b.innerHTML='🔔'+(n?`<span class="notifbadge">${n>99?'99+':n}</span>`:'');b.setAttribute('aria-label',n?`${n} notificações não lidas`:'Notificações')}
-function menuModal(){modal(`<h2>Menu</h2><button class="menurow" id="newc">＋ Adicionar contato</button><button class="menurow" id="prof">Perfil</button><button class="menurow" id="notif">Notificações</button><button class="menurow" id="activateNotifMenu">Ativar notificações</button><button class="menurow" id="bg">Fundo das conversas</button><button class="menurow" id="settings">⚙ Configurações</button><button class="menurow" id="logout">Sair</button><button class="danger" data-close>Fechar</button>`);$('#newc').onclick=addContactModal;$('#prof').onclick=profileModal;$('#notif').onclick=notificationsModal;$('#activateNotifMenu').onclick=async()=>{await setupNotifications();};$('#bg').onclick=backgroundModal;$('#settings').onclick=settingsModal;$('#logout').onclick=async()=>{try{await api('/api/logout',{method:'POST'})}catch{}localStorage.removeItem('ac_token');sessionStorage.removeItem('ac_token');location.reload()}}
+function menuModal(){modal(`<h2>Menu</h2><button class="menurow" id="newc">＋ Adicionar contato</button><button class="menurow" id="prof">Perfil</button><button class="menurow" id="notif">Notificações</button><button class="menurow" id="bg">Fundo das conversas</button><button class="menurow" id="settings">⚙ Configurações</button><button class="menurow" id="logout">Sair</button><button class="danger" data-close>Fechar</button>`);$('#newc').onclick=addContactModal;$('#prof').onclick=profileModal;$('#notif').onclick=notificationsModal;$('#bg').onclick=backgroundModal;$('#settings').onclick=settingsModal;$('#logout').onclick=async()=>{try{await api('/api/logout',{method:'POST'})}catch{}localStorage.removeItem('ac_token');sessionStorage.removeItem('ac_token');location.reload()}}
 function backgroundModal(){modal(`<h2>Fundo das conversas</h2><p class="muted">Escolha o fundo que aparecerá nas mensagens.</p><div class="bggrid"><button class="bgpick" data-bg="">Padrão</button><button class="bgpick" data-bg="gradient">Escuro</button><button class="bgpick" data-bg="dots">Pontos</button></div><label>Ou escolha uma imagem<input id="bgfile" type="file" accept="image/*"></label><button class="primary" id="savebg">Salvar fundo</button><button class="danger" data-close>Cancelar</button>`);let chosen=A.user.chatBg||'';document.querySelectorAll('.bgpick').forEach(b=>b.onclick=()=>chosen=b.dataset.bg);$('#bgfile').onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>chosen=r.result;r.readAsDataURL(f)};$('#savebg').onclick=async()=>{try{A.user=(await api('/api/me',{method:'PUT',body:{chatBg:chosen}})).user;$('#modal').innerHTML='';applyChatBg();toast('Fundo salvo')}catch(e){toast(e.message)}}}
 
 function chatThemeKey(id){return 'linka_chat_theme_'+String(id)}
@@ -399,62 +389,17 @@ function setChatTheme(id,x){try{localStorage.setItem(chatThemeKey(id),JSON.strin
 function applyChatTheme(id){const box=$('#msgs');if(!box)return;let theme={};try{theme=JSON.parse(localStorage.getItem(chatThemeKey(id))||'{}')}catch{};box.style.setProperty('--chat-font-size',(theme.font||16)+'px');box.dataset.bubbleStyle=theme.style||'default';const light=document.body.classList.contains('light-theme');const bg=getChatTheme(id);const fallback=light?'linear-gradient(180deg,#e9edef,#f5f7f8)':'radial-gradient(circle at top,#14232a,#0b141a 60%)';box.style.background=bg&&bg.startsWith('data:')?`url(${bg}) center/cover fixed, ${fallback}`:bg==='gradient'?(light?'linear-gradient(135deg,#dfeeea,#f7fbfa)':'linear-gradient(135deg,#081b22,#162a31)'):bg==='dots'?(light?'radial-gradient(circle at 20px 20px,#17212622 2px,transparent 3px) 0 0/32px 32px,#eef2f3':'radial-gradient(circle at 20px 20px,#ffffff18 2px,transparent 3px) 0 0/32px 32px,#0b141a'):fallback}
 function chatThemeModal(){if(!A.active)return;const id=A.active.id;const cur=(()=>{try{return JSON.parse(localStorage.getItem(chatThemeKey(id))||'{}')}catch{return {}}})();modal(`<h2>Estilo da conversa</h2><div class="bggrid"><button class="bgpick" data-chat-bg="">Padrão</button><button class="bgpick" data-chat-bg="gradient">Escuro</button><button class="bgpick" data-chat-bg="dots">Pontos</button></div><label>Cor dos balões<select id="bubbleStyle"><option value="default">Padrão</option><option value="blue">Azul</option><option value="purple">Roxo</option><option value="pink">Rosa</option></select></label><label>Tamanho da fonte<select id="chatFont"><option value="14">Pequeno</option><option value="16">Normal</option><option value="18">Grande</option><option value="20">Muito grande</option></select></label><label>Imagem de fundo<input id="chatWall" type="file" accept="image/*"></label><button class="primary" id="saveChatTheme">Salvar</button><button class="danger" data-close>Cancelar</button>`);$('#bubbleStyle').value=cur.style||'default';$('#chatFont').value=String(cur.font||16);let chosen=cur.bg||'';document.querySelectorAll('[data-chat-bg]').forEach(b=>b.onclick=()=>chosen=b.dataset.chatBg);$('#chatWall').onchange=e=>{const f=e.target.files?.[0];if(f){const r=new FileReader();r.onload=()=>chosen=r.result;r.readAsDataURL(f)}};$('#saveChatTheme').onclick=()=>{const x={bg:chosen,style:$('#bubbleStyle').value,font:Number($('#chatFont').value)};setChatTheme(id,x);$('#modal').innerHTML='';applyChatTheme(id);toast('Estilo da conversa salvo')}}
 function chatMenu(){if(!A.active)return;const id=A.active.id;modal(`<h2>Opções da conversa</h2><button class="menurow" id="clearChat">Limpar conversa</button><button class="menurow" id="chatTheme">Tema da conversa</button><button class="danger" data-close>Cancelar</button>`);$('#clearChat').onclick=async()=>{if(!confirm('Limpar todas as mensagens desta conversa?'))return;try{await api('/api/messages/'+id,{method:'DELETE'});A.messages=[];$('#modal').innerHTML='';drawMessages();toast('Conversa limpa')}catch(e){toast(e.message)}};$('#chatTheme').onclick=()=>chatThemeModal()}
-async function setupNotifications(opts={}){
-  if(!('Notification' in window)){toast('Este dispositivo não suporta notificações');return false}
-  try{
-    let permission=Notification.permission;
-    if(permission==='default' && !opts.noPrompt){ permission=await Notification.requestPermission(); }
-    if(permission!=='granted'){ if(permission==='denied')toast('Ative as notificações nas configurações do site.'); return false; }
-    if(!('serviceWorker' in navigator)){toast('Seu navegador não suporta notificações em segundo plano');return false}
-    const cfg=await api('/api/firebase-config');
-    if(!window.firebase){toast('Firebase não carregou');return false}
-    if(!firebase.apps.length)firebase.initializeApp(cfg);
-    const messaging=firebase.messaging();
-    const reg=await navigator.serviceWorker.register('/firebase-messaging-sw.js',{scope:'/'});
-    await navigator.serviceWorker.ready;
-    const token=await messaging.getToken({vapidKey:cfg.vapidKey,serviceWorkerRegistration:reg});
-    if(!token)throw new Error('Token FCM não foi gerado');
-    if(token!==window.__linkaFcmToken){
-      await api('/api/fcm/token',{method:'POST',body:{token}});
-      window.__linkaFcmToken=token;
-    }
-    if(!window.__linkaFcmBound){
-      window.__linkaFcmBound=true;
-      messaging.onMessage(payload=>{
-        const n=payload.notification||{}; const data=payload.data||{};
-        const title=data.title||n.title||'Linka'; const body=data.body||n.body||'Nova notificação';
-        if(document.visibilityState==='visible') toast(title+': '+body);
-        loadNotifications().then(updateNotifBell).catch(()=>{});
-      });
-      if(typeof messaging.onTokenRefresh==='function') messaging.onTokenRefresh(async()=>{
-        try{const t=await messaging.getToken({vapidKey:cfg.vapidKey,serviceWorkerRegistration:reg});if(t&&t!==window.__linkaFcmToken){await api('/api/fcm/token',{method:'POST',body:{token:t}});window.__linkaFcmToken=t}}catch(e){console.warn('FCM token refresh:',e)}});
-    }
-    window.__linkaNotificationsReady=true;
-    return true;
-  }catch(e){console.error('FCM:',e); if(!opts.silent)toast('Não foi possível ativar as notificações'); return false}
+async function setupNotifications(){
+  window.__linkaNotificationsReady=false;
+  return false;
 }
 
 async function initNotifications(){
-  try{
-    if(!('serviceWorker' in navigator)||!window.firebase||!('Notification' in window))return;
-    if(Notification.permission==='granted') await setupNotifications({noPrompt:true,silent:true});
-  }catch(e){console.warn('FCM:',e)}
+  return false;
 }
 
-function armNotificationActivation(){
-  if(window.__linkaNotifActivationArmed || !('Notification' in window))return;
-  window.__linkaNotifActivationArmed=true;
-  const activate=()=>{
-    if(window.__linkaNotifActivationDone)return;
-    if(Notification.permission==='granted'){window.__linkaNotifActivationDone=true;setupNotifications({noPrompt:true,silent:true});return}
-    if(Notification.permission==='default'){
-      window.__linkaNotifActivationDone=true;
-      setupNotifications({silent:true});
-    }
-  };
-  document.addEventListener('pointerdown',activate,{once:true,passive:true});
-  document.addEventListener('touchstart',activate,{once:true,passive:true});
-}
+
+function armNotificationActivation(){ return; }
 
 function modal(html){$('#modal').innerHTML=`<div class="modal"><div class="card">${html}</div></div>`;document.querySelector('[data-close]')?.addEventListener('click',()=>$('#modal').innerHTML='')}
 function sendSignal(to,payload){const ws=window.__linkaWs;if(!to||!ws||ws.readyState!==1)return false;try{ws.send(JSON.stringify({to,...payload}));return true}catch{return false}}

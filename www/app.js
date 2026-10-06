@@ -689,7 +689,8 @@ function playLiveAudio(b64){
   src.start(A.call.playTime);
   A.call.playTime+=Math.min(buffer.duration,0.28);
 }
-function audioIceServers(){return videoIceServers()}
+function audioIceServers(){return[{urls:['stun:stun.l.google.com:19302','stun:stun.cloudflare.com:3478']},{urls:'turn:openrelay.metered.ca:80',username:'openrelayproject',credential:'openrelayproject'},{urls:'turn:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'},{urls:'turns:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'}]}
+function waitIceGathering(pc,timeout=5000){if(pc.iceGatheringState==='complete')return Promise.resolve();return new Promise(resolve=>{let done=false;const finish=()=>{if(done)return;done=true;pc.removeEventListener('icegatheringstatechange',finish);clearTimeout(t);resolve()};const t=setTimeout(finish,timeout);pc.addEventListener('icegatheringstatechange',()=>{if(pc.iceGatheringState==='complete')finish()})})}
 async function setupAudioMedia(){
   if(A.call.audioLocal)return A.call.audioLocal;
   if(!navigator.mediaDevices?.getUserMedia)throw new Error('Microfone não disponível neste dispositivo');
@@ -715,7 +716,7 @@ async function setupAudioMedia(){
 }
 function setupAudioPeer(){
   if(A.call.audioPc)return A.call.audioPc;
-  const pc=new RTCPeerConnection({iceServers:audioIceServers(),bundlePolicy:'max-bundle',rtcpMuxPolicy:'require'});
+  const pc=new RTCPeerConnection({iceServers:audioIceServers(),bundlePolicy:'max-bundle',rtcpMuxPolicy:'require',iceCandidatePoolSize:8});
   A.call.audioPc=pc;
   pc.onicecandidate=e=>{if(e.candidate&&A.call.peer&&A.call.id)sendSignal(A.call.peer,{type:'call-audio-ice',callId:A.call.id,candidate:e.candidate})};
   pc.ontrack=e=>{
@@ -754,6 +755,7 @@ async function startOutgoingAudioOffer(){
   $('#callStatus').textContent='Conectando áudio…';
   const offer=await pc.createOffer({offerToReceiveAudio:true});
   await pc.setLocalDescription(offer);
+  await waitIceGathering(pc);
   const ok=await sendSignalReliable(A.call.peer,{type:'call-audio-offer',callId:A.call.id,offer:pc.localDescription});
   if(!ok)throw new Error('sinalização indisponível');
   const callId=A.call.id;
@@ -782,7 +784,7 @@ async function handleAudioOffer(d){
     const pc=await addAudioTracks();
     await pc.setRemoteDescription(d.offer);
     for(const c of A.call.audioRemoteIceQueue.splice(0))try{await pc.addIceCandidate(c)}catch{}
-    const answer=await pc.createAnswer();await pc.setLocalDescription(answer);
+    const answer=await pc.createAnswer();await pc.setLocalDescription(answer);await waitIceGathering(pc);
     const ok=await sendSignalReliable(d.from,{type:'call-audio-answer',callId:d.callId,answer:pc.localDescription});
     if(!ok)throw new Error('sinalização indisponível');
   }catch(e){console.error(e);toast('Falha ao conectar o áudio');endCall(true)}
@@ -821,7 +823,7 @@ async function setupVideoMedia(){
 }
 function setupVideoPeer(){
   if(A.call.videoPc)return A.call.videoPc;
-  const pc=new RTCPeerConnection({iceServers:videoIceServers(),bundlePolicy:'max-bundle',rtcpMuxPolicy:'require'});A.call.videoPc=pc;
+  const pc=new RTCPeerConnection({iceServers:videoIceServers(),bundlePolicy:'max-bundle',rtcpMuxPolicy:'require',iceCandidatePoolSize:8});A.call.videoPc=pc;
   pc.onicecandidate=e=>{if(e.candidate&&A.call.peer&&A.call.id)sendSignal(A.call.peer,{type:'call-video-ice',callId:A.call.id,candidate:e.candidate})};pc.oniceconnectionstatechange=()=>{if(pc.iceConnectionState==='failed'){console.warn('ICE vídeo falhou');$('#callStatus').textContent='Rede não conseguiu conectar o vídeo';}else if(pc.iceConnectionState==='checking')$('#callStatus').textContent='Conectando vídeo…'};
   pc.ontrack=e=>{
     if(!e.streams[0])return;
@@ -843,7 +845,7 @@ async function startOutgoingVideoCall(contact){
 function showVideoStage(){ensureCallUi();const st=$('#videoStage');if(st)st.hidden=false;const av=$('#callAvatar');if(av)av.style.display='none';const card=$('#callCard');if(card)card.classList.add('videoCallCard')}
 async function beginVideoOffer(){
   const stream=await setupVideoMedia();const pc=setupVideoPeer();stream.getTracks().forEach(t=>{if(!pc.getSenders().some(s=>s.track===t))pc.addTrack(t,stream)});
-  const offer=await pc.createOffer({offerToReceiveAudio:true,offerToReceiveVideo:true});await pc.setLocalDescription(offer);const ok=await sendSignalReliable(A.call.peer,{type:'call-video-offer',callId:A.call.id,offer:pc.localDescription});if(!ok)throw new Error('sinalização indisponível');
+  const offer=await pc.createOffer({offerToReceiveAudio:true,offerToReceiveVideo:true});await pc.setLocalDescription(offer);await waitIceGathering(pc);const ok=await sendSignalReliable(A.call.peer,{type:'call-video-offer',callId:A.call.id,offer:pc.localDescription});if(!ok)throw new Error('sinalização indisponível');
   const callId=A.call.id;setTimeout(()=>{if(A.call.id===callId&&!A.call.connectedAt&&A.call.videoPc){$('#callStatus').textContent='Vídeo sem conexão de rede';}},15000);
 }
 async function acceptIncomingVideoCall(){
@@ -856,7 +858,7 @@ async function acceptIncomingVideoCall(){
   setupVideoMedia().catch(e=>{console.error(e);toast(e?.name==='NotAllowedError'?'Permita câmera e microfone para usar o vídeo':'Não foi possível acessar câmera e microfone')});
 }
 async function handleVideoReady(d){if(d?.callId!==A.call.id||A.call.mode!=='video')return;try{await beginVideoOffer()}catch(e){console.error(e);toast('Não foi possível iniciar o vídeo');endCall(true)}}
-async function handleVideoOffer(d){if(d?.callId!==A.call.id||A.call.mode!=='video'||!A.call.accepted)return;try{const stream=await setupVideoMedia();const pc=setupVideoPeer();stream.getTracks().forEach(t=>{if(!pc.getSenders().some(s=>s.track===t))pc.addTrack(t,stream)});await pc.setRemoteDescription(d.offer);for(const c of A.call.videoRemoteIceQueue.splice(0))try{await pc.addIceCandidate(c)}catch{}const answer=await pc.createAnswer();await pc.setLocalDescription(answer);const ok=await sendSignalReliable(d.from,{type:'call-video-answer',callId:d.callId,answer:pc.localDescription});if(!ok)throw new Error('sinalização indisponível')}catch(e){console.error(e);toast('Falha ao conectar o vídeo');endCall(true)}}
+async function handleVideoOffer(d){if(d?.callId!==A.call.id||A.call.mode!=='video'||!A.call.accepted)return;try{const stream=await setupVideoMedia();const pc=setupVideoPeer();stream.getTracks().forEach(t=>{if(!pc.getSenders().some(s=>s.track===t))pc.addTrack(t,stream)});await pc.setRemoteDescription(d.offer);for(const c of A.call.videoRemoteIceQueue.splice(0))try{await pc.addIceCandidate(c)}catch{}const answer=await pc.createAnswer();await pc.setLocalDescription(answer);await waitIceGathering(pc);const ok=await sendSignalReliable(d.from,{type:'call-video-answer',callId:d.callId,answer:pc.localDescription});if(!ok)throw new Error('sinalização indisponível')}catch(e){console.error(e);toast('Falha ao conectar o vídeo');endCall(true)}}
 async function handleVideoAnswer(d){if(d?.callId!==A.call.id||!A.call.videoPc)return;try{await A.call.videoPc.setRemoteDescription(d.answer);for(const c of A.call.videoRemoteIceQueue.splice(0))try{await A.call.videoPc.addIceCandidate(c)}catch{}}catch(e){console.error(e);toast('Falha ao finalizar a chamada de vídeo');endCall(true)}}
 async function handleVideoIce(d){if(d?.callId!==A.call.id||!d.candidate)return;const pc=A.call.videoPc;if(!pc||!pc.remoteDescription){A.call.videoRemoteIceQueue.push(d.candidate);return}try{await pc.addIceCandidate(d.candidate)}catch(e){console.warn('ICE vídeo',e)}}
 function startOutgoingCall(contact){

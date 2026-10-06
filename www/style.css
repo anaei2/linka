@@ -190,3 +190,17 @@ body.media-viewer-open{overflow:hidden}
 .profileHero{position:relative;width:max-content;margin:0 auto 10px}.profileOnlineDot{position:absolute;right:5px;bottom:5px;width:16px;height:16px;border-radius:50%;background:#00a884;border:3px solid #202c33}.profileStatus{margin:8px 0 16px}.profileInfoGrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;text-align:left;margin:12px 0}.profileInfoGrid>div{background:#2a3942;border-radius:10px;padding:10px}.profileInfoGrid small{display:block;color:#9aabb3;font-size:11px}.profileInfoGrid b{display:block;margin-top:3px;overflow:hidden;text-overflow:ellipsis}.profileNoteLabel{text-align:left!important}.card textarea#contactNote{user-select:text;-webkit-user-select:text;-webkit-touch-callout:default}
 
 .qrBox{text-align:center;padding:12px}.qrBox img{width:220px;height:220px;max-width:70vw;background:#fff;padding:10px;border-radius:12px}.storageTotal{display:flex;flex-direction:column;align-items:center;padding:18px;border-radius:16px;background:var(--panel2,#16232a);margin:10px 0 14px}.storageTotal b{font-size:30px}.storageRows{display:flex;flex-direction:column;gap:8px}.storageRows>div{display:flex;justify-content:space-between;gap:12px;padding:13px;border-radius:12px;background:var(--panel2,#16232a)}.storageRows span{opacity:.72;text-align:right}.mediaPrev,.mediaNext{position:absolute;top:50%;transform:translateY(-50%);z-index:3;border:0;border-radius:50%;width:44px;height:44px;font-size:34px;background:#0009;color:#fff}.mediaPrev{left:12px}.mediaNext{right:12px}.mediaPrev[hidden],.mediaNext[hidden]{display:none}
+
+/* Status na lista de conversas: verde = novo, branco = já visto */
+.statusAvatar{width:52px;height:52px;border-radius:50%;padding:2.5px;display:grid;place-items:center;flex:0 0 auto;cursor:pointer}
+.statusAvatar .avatar{width:100%;height:100%;border-radius:50%}
+.statusAvatar.statusNew{background:#25d366}
+.statusAvatar.statusSeen{background:#d9d9d9}
+.addContactTools{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+.addContactTools input{flex:1;min-width:0}
+.addContactTools .menurow{width:auto;white-space:nowrap}
+.qrScanner{position:relative;width:100%;aspect-ratio:1/1;max-height:62vh;background:#05090b;border-radius:16px;overflow:hidden;display:grid;place-items:center}
+.qrScanner video{width:100%;height:100%;object-fit:cover}
+.qrFrame{position:absolute;width:58%;aspect-ratio:1;border:3px solid #25d366;border-radius:18px;box-shadow:0 0 0 999px rgba(0,0,0,.22)}
+#qrScanResult{margin-top:10px}
+@media(max-width:600px){.addContactTools{flex-direction:column;align-items:stretch}.addContactTools .menurow{width:100%}}

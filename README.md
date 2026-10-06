@@ -1,14 +1,68 @@
-# Linka — versão compatível com FreeWebToApk
+# Linka v44 — FCM real
 
-Esta versão não usa Firebase Web Messaging/FCM no navegador. O Linka continua usando WebSocket para mensagens, chamadas e atualizações em tempo real.
+Esta versão parte da v43 e usa Firebase Cloud Messaging (FCM) para notificações push do Linka.
 
-## APK
-Use a URL do servidor Linka no FreeWebToApk. Não é necessário colocar google-services.json para esta versão.
+## O que foi preparado
 
-URL atual: https://linka-8llq.onrender.com/
-Pacote sugerido: com.linka.chat
+- Registro do token FCM de cada dispositivo no servidor.
+- Firebase Admin SDK no servidor para enviar push.
+- Service Worker `firebase-messaging-sw.js` para receber notificações em segundo plano.
+- Notificações de novas mensagens, arquivos/mídia e chamadas.
+- Clique na notificação abre o Linka e a conversa correspondente quando houver `chatId`.
+- Tokens inválidos são removidos automaticamente.
+- Botão **Testar notificação** dentro de Configurações > Notificações.
+- O servidor mantém o histórico/contador de notificações do Linka.
+- O sistema anterior de Web Push permanece no código histórico, mas o envio de notificações da v44 usa FCM.
 
-## Servidor
-O servidor continua usando Supabase quando `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` estão configurados.
+## Configuração no Render
 
-Notificações push externas estão desativadas nesta versão, conforme o objetivo do APK.
+No serviço do Linka, abra **Environment** e configure:
+
+### 1. Firebase Admin — obrigatório para o servidor enviar
+
+Crie uma Service Account no seu projeto Firebase e coloque o JSON inteiro em uma variável chamada:
+
+`FIREBASE_SERVICE_ACCOUNT_JSON`
+
+Não coloque esse JSON dentro do GitHub. Ele contém credenciais privadas.
+
+### 2. Configuração pública do Firebase Web
+
+Preencha também:
+
+- `FIREBASE_API_KEY`
+- `FIREBASE_AUTH_DOMAIN`
+- `FIREBASE_PROJECT_ID`
+- `FIREBASE_STORAGE_BUCKET`
+- `FIREBASE_MESSAGING_SENDER_ID`
+- `FIREBASE_APP_ID`
+- `FIREBASE_VAPID_KEY`
+
+A chave VAPID usada pelo navegador é a **Web Push certificate key** do Firebase Cloud Messaging.
+
+### 3. HTTPS
+
+O FCM para Web precisa de HTTPS e de um Service Worker. O endereço HTTPS do Render atende essa parte.
+
+## Como testar
+
+1. Faça deploy da v44.
+2. Abra o Linka pelo endereço HTTPS.
+3. Entre na conta.
+4. Abra **Configurações > Notificações**.
+5. Toque em **Ativar notificações** e aceite a permissão do navegador.
+6. Toque em **Testar notificação**.
+7. Deixe o Linka em segundo plano e veja se o Android mostra a notificação.
+8. Depois teste uma mensagem de outro usuário.
+
+Se o botão de teste disser que o Firebase não está configurado, o problema está nas variáveis do Render, principalmente `FIREBASE_SERVICE_ACCOUNT_JSON` ou `FIREBASE_VAPID_KEY`.
+
+## Segurança
+
+Nunca publique no GitHub:
+
+- Service Account JSON.
+- Chave privada da Service Account.
+- Senhas ou tokens de servidor.
+
+As configurações públicas do Firebase Web podem ficar no cliente; a Service Account deve ficar somente como variável secreta no servidor.

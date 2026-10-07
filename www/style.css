@@ -30,8 +30,8 @@
 .side{position:relative}
 .tabs{order:3;flex:none;height:66px;padding:7px 6px calc(7px + env(safe-area-inset-bottom));gap:2px;border-top:1px solid #26343d;background:#202c33;z-index:5}
 .top,.search{order:1}.list{order:2}
-.tabs .tab{flex:1;min-width:0;height:50px;padding:5px 3px;border-radius:10px;background:transparent;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:11px;font-weight:650;white-space:nowrap}
-.tabs .tab.active{background:transparent;color:#00a884}
+.tabs .tab{flex:1;min-width:0;height:50px;padding:5px 3px;border:1px solid #3a4b53;border-radius:10px;background:transparent;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:11px;font-weight:650;white-space:nowrap}
+.tabs .tab.active{background:#25363c;color:#00a884;border-color:#00a884}
 .tabs .tab:active{background:#ffffff0b}
 .tabs .tab svg{width:20px;height:20px;fill:currentColor}
 .statusItem .avatar{position:relative}
@@ -204,3 +204,5 @@ body.media-viewer-open{overflow:hidden}
 .qrFrame{position:absolute;width:58%;aspect-ratio:1;border:3px solid #25d366;border-radius:18px;box-shadow:0 0 0 999px rgba(0,0,0,.22)}
 #qrScanResult{margin-top:10px}
 @media(max-width:600px){.addContactTools{flex-direction:column;align-items:stretch}.addContactTools .menurow{width:100%}}
+
+.selectionBar{position:absolute;inset:0;display:flex;align-items:center;gap:8px;padding:8px 10px;background:#202c33;z-index:20}.selectionBar b{flex:1}.selectionBar button{border:0;background:#00a884;color:#fff;border-radius:18px;padding:8px 12px;font-weight:700}.selectionBar button:last-child{background:#3a4b53}.bubble.selected-message{outline:2px solid #00a884;box-shadow:0 0 0 4px #00a88422}

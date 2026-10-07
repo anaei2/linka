@@ -206,9 +206,3 @@ body.media-viewer-open{overflow:hidden}
 @media(max-width:600px){.addContactTools{flex-direction:column;align-items:stretch}.addContactTools .menurow{width:100%}}
 
 .selectionBar{position:absolute;inset:0;display:flex;align-items:center;gap:8px;padding:8px 10px;background:#202c33;z-index:20}.selectionBar b{flex:1}.selectionBar button{border:0;background:#00a884;color:#fff;border-radius:18px;padding:8px 12px;font-weight:700}.selectionBar button:last-child{background:#3a4b53}
-
-.contactBubble{display:flex;align-items:center;gap:10px;min-width:240px}.contactBubbleAvatar{width:46px;height:46px;border-radius:50%;overflow:hidden;background:#2a3942;display:grid;place-items:center;font-size:24px}.contactBubbleAvatar img{width:100%;height:100%;object-fit:cover}.contactBubble>div:nth-child(2){display:flex;flex-direction:column;min-width:0;flex:1}.contactBubble small{opacity:.65}.contactBubble button{border:0;border-radius:14px;background:#00a884;color:#fff;padding:7px 9px;font-weight:700}.contactSendRow{display:flex;align-items:center;gap:10px}.contactSendRow span{display:flex;flex-direction:column;text-align:left}.contactSendRow small{opacity:.65}.pinnedRow{display:flex;flex-direction:column;gap:4px;text-align:left}.voicePreview{display:flex;align-items:center;gap:8px;padding:8px 10px;background:#17242a;border-top:1px solid #34454e}.voicePreview audio{flex:1;min-width:0;height:38px}.voicePreview button{border:0;border-radius:14px;padding:8px 10px;background:#00a884;color:#fff}.voicePreview button:first-of-type{background:#40515a}.light-theme .voicePreview{background:#eef2f3}.light-theme .contactBubbleAvatar{background:#dde5e8}.light-theme .contactBubble button{color:#fff}
-
-/* Resposta por gesto: puxe a mensagem para a direita */
-.bubble{touch-action:pan-y;transition:transform .16s ease, box-shadow .16s ease;}
-.bubble.reply-swiping{box-shadow:0 0 0 2px rgba(0,180,255,.35);}

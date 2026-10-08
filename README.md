@@ -66,3 +66,10 @@ Nunca publique no GitHub:
 - Senhas ou tokens de servidor.
 
 As configurações públicas do Firebase Web podem ficar no cliente; a Service Account deve ficar somente como variável secreta no servidor.
+
+
+## Otimização de memória v22
+- Status com foto/vídeo novos são gravados em arquivo, não mantidos em base64 no banco em RAM.
+- Removido backup local duplicado a cada gravação.
+- Backup Supabase foi desacelerado e não cria uma cópia profunda inteira do banco antes de enviar.
+- Arquivos de status expirados são limpos automaticamente.

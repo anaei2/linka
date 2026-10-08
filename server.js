@@ -6,6 +6,8 @@ const DATA_DIR=process.env.DATA_DIR||path.join(__dirname);
 const DATA=path.join(DATA_DIR,'data.json'), BACKUP=path.join(DATA_DIR,'data.json.bak');
 const MEDIA_DIR=path.join(DATA_DIR,'media');
 try{fs.mkdirSync(MEDIA_DIR,{recursive:true})}catch(e){console.error('Não foi possível criar MEDIA_DIR:',e)}
+const STATUS_MEDIA_DIR=path.join(MEDIA_DIR,'statuses');
+try{fs.mkdirSync(STATUS_MEDIA_DIR,{recursive:true})}catch(e){console.error('Não foi possível criar STATUS_MEDIA_DIR:',e)}
 const SUPABASE_URL=String(process.env.SUPABASE_URL||'').replace(/\/$/,'');
 const SUPABASE_KEY=String(process.env.SUPABASE_SERVICE_ROLE_KEY||'');
 const REMOTE_ENABLED=!!(SUPABASE_URL&&SUPABASE_KEY);
@@ -67,6 +69,21 @@ let db={users:[],contacts:{},messages:{},sessions:{},fcmTokens:{},notifications:
 const pendingCalls=new Map();
 const endedCallIds=new Set();
 let firebaseReady=false;
+function cleanupExpiredStatuses(){
+  const now=Date.now();
+  for(const uid of Object.keys(db.statuses||{})){
+    const arr=Array.isArray(db.statuses[uid])?db.statuses[uid]:(db.statuses[uid]?[db.statuses[uid]]:[]);
+    const keep=[];
+    for(const st of arr){
+      if(!st)continue;
+      if(now-Number(st.createdAt||0)>86400000){
+        if(st.mediaFile){try{fs.unlinkSync(path.join(STATUS_MEDIA_DIR,path.basename(st.mediaFile)))}catch{}}
+      }else keep.push(st);
+    }
+    if(keep.length)db.statuses[uid]=keep;else delete db.statuses[uid];
+  }
+}
+
 function initFirebase(){
   try{
     if(admin.apps.length){firebaseReady=true;return}
@@ -118,9 +135,9 @@ async function loadRemote(){
 let saveTimer=null, saveRunning=false, saveAgain=false;
 function writeLocal(){
   try{
-    const tmp=DATA+'.tmp', text=JSON.stringify(db);
+    const tmp=DATA+'.tmp';
+    const text=JSON.stringify(db);
     fs.writeFileSync(tmp,text);
-    if(fs.existsSync(DATA)){try{fs.copyFileSync(DATA,BACKUP)}catch(e){}}
     fs.renameSync(tmp,DATA);
   }catch(e){console.error('Falha ao salvar localmente:',e)}
 }
@@ -137,11 +154,10 @@ function save(){
   saveTimer=setTimeout(async()=>{
     if(saveRunning){saveAgain=true;return}
     saveRunning=true; saveAgain=false;
-    const snapshot=JSON.parse(JSON.stringify(db));
-    await pushRemote(snapshot);
+    await pushRemote(db);
     saveRunning=false;
     if(saveAgain)save();
-  },250);
+  },1500);
 }
 
 function id(){return crypto.randomBytes(12).toString('hex')}
@@ -225,10 +241,26 @@ app.get('/api/statuses',auth,(req,res)=>{
 app.post('/api/statuses',auth,(req,res)=>{
   const text=String(req.body?.text||'').trim().slice(0,500), media=String(req.body?.media||''), mediaType=String(req.body?.mediaType||'');
   if(!text&&!media)return res.status(400).json({error:'Adicione um texto, foto ou vídeo.'});
-  if(media){if(!/^data:(image\/|video\/)[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+$/.test(media))return res.status(400).json({error:'Foto ou vídeo inválido.'});if(media.length>11*1024*1024)return res.status(400).json({error:'A mídia do status é muito grande.'});if(!/^(image\/|video\/)/.test(mediaType))return res.status(400).json({error:'Tipo de mídia inválido.'});}
-  db.statuses[req.user.id]=Array.isArray(db.statuses[req.user.id])?db.statuses[req.user.id]: (db.statuses[req.user.id]?[db.statuses[req.user.id]]:[]);
-  const st={id:id(),text,media:media||'',mediaType:mediaType||'',createdAt:Date.now(),likes:[],views:[]};
-  db.statuses[req.user.id].push(st); db.statuses[req.user.id]=db.statuses[req.user.id].slice(-20); save(); res.json({ok:true,statusId:st.id});
+  if(media){
+    if(!/^data:(image\/|video\/)[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+$/.test(media))return res.status(400).json({error:'Foto ou vídeo inválido.'});
+    if(media.length>11*1024*1024)return res.status(400).json({error:'A mídia do status é muito grande.'});
+    if(!/^(image\/|video\/)/.test(mediaType))return res.status(400).json({error:'Tipo de mídia inválido.'});
+  }
+  db.statuses[req.user.id]=Array.isArray(db.statuses[req.user.id])?db.statuses[req.user.id]:(db.statuses[req.user.id]?[db.statuses[req.user.id]]:[]);
+  const st={id:id(),text,media:'',mediaType:mediaType||'',createdAt:Date.now(),likes:[],views:[]};
+  if(media){
+    try{
+      const m=String(media).match(/^data:([^;]+);base64,(.*)$/s);
+      if(!m) return res.status(400).json({error:'Mídia inválida.'});
+      const ext=(m[1].split('/')[1]||'bin').replace(/[^a-z0-9]/gi,'').slice(0,10)||'bin';
+      const filename=st.id+'.'+ext;
+      fs.writeFileSync(path.join(STATUS_MEDIA_DIR,filename),Buffer.from(m[2],'base64'));
+      st.mediaFile=filename;
+    }catch(e){return res.status(500).json({error:'Não foi possível salvar a mídia do status.'});}
+  }
+  db.statuses[req.user.id].push(st);
+  db.statuses[req.user.id]=db.statuses[req.user.id].slice(-20);
+  save(); res.json({ok:true,statusId:st.id});
 });
 function findStatus(owner,statusId){
   const raw=db.statuses[owner]; const arr=Array.isArray(raw)?raw:(raw?[raw]:[]); return arr.find(st=>String(st.id||st.createdAt)===String(statusId))||null;
@@ -237,7 +269,19 @@ app.get('/api/status-media/:owner/:statusId',(req,res,next)=>{const qt=String(re
   const owner=String(req.params.owner),sid=String(req.params.statusId);
   const ids=db.contacts[req.user.id]||[]; if(owner!==String(req.user.id)&&!ids.map(String).includes(owner))return res.status(403).end();
   const st=findStatus(owner,sid); if(!st||Date.now()-Number(st.createdAt||0)>86400000||(!st.media&&!st.mediaFile))return res.status(404).end();
-  try{let buf,type=String(st.mediaType||'application/octet-stream');if(st.mediaFile)buf=fs.readFileSync(path.join(MEDIA_DIR,path.basename(st.mediaFile)));else{const parts=String(st.media).match(/^data:([^;]+);base64,(.*)$/s);if(!parts)return res.status(404).end();type=parts[1];buf=Buffer.from(parts[2],'base64')}res.setHeader('Content-Type',type);res.setHeader('Content-Length',String(buf.length));res.setHeader('Cache-Control','private, max-age=3600');res.end(buf)}catch{res.status(404).end()}
+  try{
+    let type=String(st.mediaType||'application/octet-stream');
+    if(st.mediaFile){
+      const fp=path.join(STATUS_MEDIA_DIR,path.basename(st.mediaFile));
+      if(!fs.existsSync(fp))return res.status(404).end();
+      res.setHeader('Content-Type',type);res.setHeader('Cache-Control','private, max-age=3600');
+      return fs.createReadStream(fp).pipe(res);
+    }
+    const parts=String(st.media||'').match(/^data:([^;]+);base64,(.*)$/s);
+    if(!parts)return res.status(404).end();
+    const buf=Buffer.from(parts[2],'base64');
+    res.setHeader('Content-Type',parts[1]);res.setHeader('Content-Length',String(buf.length));res.setHeader('Cache-Control','private, max-age=3600');res.end(buf);
+  }catch{res.status(404).end()}
 });
 app.post('/api/statuses/:owner/:statusId/like',auth,(req,res)=>{const owner=String(req.params.owner),statusId=String(req.params.statusId);if(owner===String(req.user.id))return res.status(400).json({error:'Você não pode curtir seu próprio status.'});const ids=db.contacts[req.user.id]||[];if(!ids.map(String).includes(owner))return res.status(403).json({error:'Você precisa ter este contato para curtir o status.'});const st=findStatus(owner,statusId),u=db.users.find(x=>String(x.id)===owner);if(!st||!u||Date.now()-Number(st.createdAt||0)>86400000)return res.status(404).json({error:'Status não encontrado.'});st.likes=Array.isArray(st.likes)?st.likes:[];const i=st.likes.findIndex(x=>String(x)===String(req.user.id));const liked=i<0;if(liked)st.likes.push(req.user.id);else st.likes.splice(i,1);save();if(liked){const note=addNotification(owner,{kind:'status_like',title:'Curtida no seu status',body:(req.user.name||'Alguém')+' curtiu seu status.',from:req.user.id});pushUser(owner,{title:note.title,body:note.body,icon:'/icon-192.png',badge:'/icon-192.png',data:{notificationId:note.id,statusUserId:owner,statusId}}).catch(()=>{});}sendUser(owner,{type:'status_like',statusUserId:owner,statusId,from:req.user.id,liked});res.json({ok:true,liked,likeCount:st.likes.length});});
 app.post('/api/statuses/:owner/:statusId/view',auth,(req,res)=>{const owner=String(req.params.owner),statusId=String(req.params.statusId);if(owner===String(req.user.id))return res.json({ok:true,viewed:false});const ids=db.contacts[req.user.id]||[];if(!ids.map(String).includes(owner))return res.status(403).json({error:'Você precisa ter este contato para ver o status.'});const st=findStatus(owner,statusId),u=db.users.find(x=>String(x.id)===owner);if(!st||!u||Date.now()-Number(st.createdAt||0)>86400000)return res.status(404).json({error:'Status não encontrado.'});st.views=Array.isArray(st.views)?st.views:[];if(!st.views.some(v=>String(v.userId)===String(req.user.id))){st.views.push({userId:req.user.id,viewedAt:Date.now()});save();}res.json({ok:true,viewCount:st.views.length});});
